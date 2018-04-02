@@ -2153,9 +2153,6 @@ lock_suspend (THREAD_ENTRY * thread_p, LK_ENTRY * entry_ptr, int wait_msecs)
   lk_Gl.TWFG_node[entry_ptr->tran_index].thrd_wait_stime = entry_ptr->thrd_entry->lockwait_stime;
   lk_Gl.deadlock_and_timeout_detector++;
 
-  /* wakeup the dealock detect thread */
-  lock_Deadlock_detect_daemon->wakeup ();
-
   tdes = LOG_FIND_CURRENT_TDES (thread_p);
 
   /* I must not be a deadlock-victim thread */
@@ -5909,11 +5906,11 @@ class deadlock_detect_task : public cubthread::entry_task
 	  return;
 	}
 
-      if (!lock_is_local_deadlock_detection_interval_up ())
-	{
-	  // forced to wait until PRM_ID_LK_RUN_DEADLOCK_INTERVAL
-	  return;
-	}
+//      if (!lock_is_local_deadlock_detection_interval_up ())
+//	{
+//	  // forced to wait until PRM_ID_LK_RUN_DEADLOCK_INTERVAL
+//	  return;
+//	}
 
       if (lk_Gl.deadlock_and_timeout_detector == 0)
 	{
@@ -5964,7 +5961,7 @@ lock_deadlock_detect_daemon_init ()
 {
   assert (lock_Deadlock_detect_daemon == NULL);
 
-  cubthread::looper looper = cubthread::looper (std::chrono::milliseconds (100));
+  cubthread::looper looper = cubthread::looper (std::chrono::milliseconds (prm_get_float_value (PRM_ID_LK_RUN_DEADLOCK_INTERVAL) * 1000));
   deadlock_detect_task *daemon_task = new deadlock_detect_task ();
 
   // create deadlock detect daemon thread
@@ -7821,10 +7818,10 @@ lock_is_local_deadlock_detection_interval_up (void)
     {
       return false;
     }
-  else
-    {
-      return true;
-    }
+
+  /* refresh last deadlock detection timestamp */
+  lk_Gl.last_deadlock_run = now;
+  return true;
 #else /* !SERVER_MODE */
   return false;
 #endif /* SERVER_MODE */
