@@ -61,11 +61,11 @@ CUBRID
 
 MEMBER
 ======
-이름    깃헙닉네임      이메일
-곽현기   gwiseki      gwak0320@gmail.com
-김성준   rubybee      zxcasd1545@gmail.com
-류정석   ryoo0424     ryoo0424@naver.com
-윤여찬   manshimaro   power200012@naver.com
+- 이름    깃헙닉네임      이메일
+- 곽현기   gwiseki      gwak0320@gmail.com
+- 김성준   rubybee      zxcasd1545@gmail.com
+- 류정석   ryoo0424     ryoo0424@naver.com
+- 윤여찬   manshimaro   power200012@naver.com
 
 static page
 ===========
