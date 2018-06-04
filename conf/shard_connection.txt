@@ -1,0 +1,9 @@
+#
+# shard-id	real-db-name	connection-info
+#				* cubrid : hostname, hostname, ...
+
+# cubrid
+#0		shard1		host1  	
+#1		shard1		host2
+#2		shard1		host3
+#3		shard1		host4
