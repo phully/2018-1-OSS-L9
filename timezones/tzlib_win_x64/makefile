@@ -1,11 +1,11 @@
 DLLPATH=.
 
-FILES = timezones.obj timezone_lib_common.h
+FILES=timezones.obj timezone_lib_common.h
 
 ######################################
 # Set flags, filenames, folders etc. #
 ######################################
-OBJS = timezones.obj
+OBJS=timezones.obj
 OUTFILE=timezones.dll
 
 ##################################
