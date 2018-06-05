@@ -38,9 +38,16 @@
 #include "tz_support.h"
 #include "xml_parser.h"
 #include "md5.h"
-#include "db.h"
 #include "db_query.h"
-#include "dbi.h"
+#include "dbtype.h"
+
+#if defined (SA_MODE)
+#include "db.h"
+#endif /* SA_MODE */
+
+#if defined (SUPPRESS_STRLEN_WARNING)
+#define strlen(s1)  ((int) strlen(s1))
+#endif /* defined (SUPPRESS_STRLEN_WARNING) */
 
 #define TZ_FILENAME_MAX_LEN	    17
 #define TZ_MAX_LINE_LEN		    512
@@ -111,6 +118,7 @@ static const TZ_FILE_DESCRIPTOR tz_Files[] = {
   {TZF_LEAP, "leapseconds"}
 #endif
 };
+
 static int tz_File_count = DIM (tz_Files);
 
 typedef struct tz_raw_country TZ_RAW_COUNTRY;
@@ -356,7 +364,7 @@ extern const TZ_COUNTRY tz_countries[];
 
 #define PRINT_STRING_VAR_TO_C_FILE(fp, valname, val)			  \
   do {                                                                    \
-      fprintf (fp, "\n"SHLIB_EXPORT_PREFIX"const char "valname"[] = ");   \
+      fprintf (fp, "\n" SHLIB_EXPORT_PREFIX "const char " valname "[] = ");   \
       PRINT_STRING_TO_C_FILE (fp, val, strlen (val));			  \
       fprintf (fp, ";\n");                                                \
   } while (0);
@@ -426,11 +434,11 @@ static int comp_func_raw_offset_rules (const void *arg1, const void *arg2);
 static int comp_func_raw_ds_rulesets (const void *arg1, const void *arg2);
 static int comp_func_raw_ds_rules (const void *arg1, const void *arg2);
 static int comp_func_tz_names (const void *arg1, const void *arg2);
-static int comp_func_zone_info (const void *arg1, const void *arg2);
 
 static void print_seconds_as_time_hms_var (int seconds);
 
-static int tzc_export_timezone_C_file (const TZ_DATA * tzd);
+static void tzc_get_timezones_dot_c_filepath (size_t size, char *timezones_dot_c_file_path);
+static int tzc_export_timezone_dot_c (const TZ_DATA * tzd, const char *tz_C_filepath);
 
 static int tzc_load_raw_data (TZ_RAW_DATA * tzd_raw, const char *input_folder);
 static int tzc_import_old_data (TZ_RAW_DATA * tzd_raw, const TZ_GEN_TYPE mode);
@@ -464,7 +472,9 @@ static int tzc_update (TZ_DATA * tzd, const char *database_name);
 #endif
 static int tzc_compute_timezone_checksum (TZ_DATA * tzd, TZ_GEN_TYPE type);
 static int get_day_of_week_for_raw_rule (const TZ_RAW_DS_RULE * rule, const int year);
+#if defined (SA_MODE)
 static int execute_query (const char *str, DB_QUERY_RESULT ** result);
+#endif /* defined (SA_MODE) */
 
 #if defined(WINDOWS)
 static int comp_func_tz_windows_zones (const void *arg1, const void *arg2);
@@ -566,7 +576,7 @@ trim_comments_whitespaces (char *str)
 static int
 tzc_check_new_package_validity (const char *input_folder)
 {
-  bool err_status = NO_ERROR;
+  int err_status = NO_ERROR;
   FILE *fp;
   int i;
   char temp_path[PATH_MAX];
@@ -602,15 +612,19 @@ exit:
  * tz_gen_type(in): control flag (type of TZ build/gen to perform)
  * database_name(in): database name for which to do data migration if an update is necessary, if it is NULL
  *                    then data migration will be done for all the databases
+ * timezones_dot_c_filepath(in): path for timezones.c output file. if NULL, it will be saved in default path (in CUBRID install
+ *                       folder).
  * checksum(out): new checksum to write in the database when extend option is used
  */
 int
-timezone_compile_data (const char *input_folder, const TZ_GEN_TYPE tz_gen_type, char *database_name, char *checksum)
+timezone_compile_data (const char *input_folder, const TZ_GEN_TYPE tz_gen_type, char *database_name,
+		       const char *timezones_dot_c_filepath, char *checksum)
 {
   int err_status = NO_ERROR;
   TZ_RAW_DATA tzd_raw;
   TZ_DATA tzd;
   bool write_checksum = false;
+  char default_output_file_path[PATH_MAX] = { 0 };
 
   memset (&tzd, 0, sizeof (tzd));
   memset (&tzd_raw, 0, sizeof (tzd_raw));
@@ -695,7 +709,12 @@ timezone_compile_data (const char *input_folder, const TZ_GEN_TYPE tz_gen_type, 
       goto exit;
     }
 
-  err_status = tzc_export_timezone_C_file (&tzd);
+  if (timezones_dot_c_filepath == NULL)
+    {
+      tzc_get_timezones_dot_c_filepath (sizeof (default_output_file_path), default_output_file_path);
+      timezones_dot_c_filepath = default_output_file_path;
+    }
+  err_status = tzc_export_timezone_dot_c (&tzd, timezones_dot_c_filepath);
   if (err_status != NO_ERROR)
     {
       goto exit;
@@ -904,7 +923,6 @@ static int
 tzc_import_old_data (TZ_RAW_DATA * tzd_raw, const TZ_GEN_TYPE mode)
 {
   int err_status = NO_ERROR;
-  TZ_DATA *data = NULL;
 
   if (mode == TZ_GEN_TYPE_NEW)
     {
@@ -1139,7 +1157,6 @@ tzc_load_zone_names (TZ_RAW_DATA * tzd_raw, const char *input_folder)
   int i, file_index = -1;
   char zone_filepath[PATH_MAX] = { 0 };
   char str[256];
-  char *str_cursor = NULL;
   FILE *fp = NULL;
   TZ_RAW_ZONE_INFO *temp_zone_info = NULL;
   char *col_code, *col_coord, *col_tz_name, *col_comments;
@@ -1241,9 +1258,7 @@ tzc_load_rule_file (TZ_RAW_DATA * tzd_raw, const int file_index, const char *inp
   char filepath[PATH_MAX] = { 0 };
   char str[TZ_MAX_LINE_LEN] = { 0 };
   FILE *fp = NULL;
-  void *block_alloc = NULL;
   char *entry_type_str = NULL;
-  char *prev_entry_type_str = NULL;
   TZ_RAW_ZONE_INFO *last_zone = NULL;
   char *next_token = NULL;
   bool check_zone = false;
@@ -1396,7 +1411,6 @@ tzc_load_backward_zones (TZ_RAW_DATA * tzd_raw, const char *input_folder)
   char filepath[PATH_MAX] = { 0 };
   char str[TZ_MAX_LINE_LEN] = { 0 };
   FILE *fp = NULL;
-  void *block_alloc = NULL;
   char *entry_type_str = NULL;
   char *next_token = NULL, *zone_name = NULL, *alias = NULL;
 
@@ -1495,7 +1509,6 @@ tzc_load_leap_secs (TZ_RAW_DATA * tzd_raw, const char *input_folder)
   char filepath[PATH_MAX] = { 0 };
   char str[TZ_MAX_LINE_LEN] = { 0 };
   FILE *fp = NULL;
-  void *block_alloc = NULL;
   const char *next_token, *str_next, *entry_type_str;
   bool leap_corr_minus = false;
   bool leap_is_rolling = false;
@@ -1821,7 +1834,6 @@ static int
 tzc_get_zone (const TZ_RAW_DATA * tzd_raw, const char *zone_name, TZ_RAW_ZONE_INFO ** zone)
 {
   int i;
-  int err_status = NO_ERROR;
 
   assert (tzd_raw != NULL);
 
@@ -1938,6 +1950,9 @@ tzc_add_offset_rule (TZ_RAW_ZONE_INFO * zone, char *rule_text)
 	  goto exit;
 	}
     }
+
+  assert (strlen (rules) < TZ_DS_RULESET_NAME_SIZE && strlen (format) < TZ_MAX_FORMAT_SIZE);
+
   strcpy (temp_rule->ds_ruleset_name, rules);
   strcpy (temp_rule->format, format);
 
@@ -2356,8 +2371,6 @@ tzc_free_raw_data (TZ_RAW_DATA * tzd_raw)
     }
   if (tzd_raw->ds_rulesets != NULL)
     {
-      TZ_RAW_DS_RULE *rule = NULL;
-
       for (i = 0; i < tzd_raw->ruleset_count; i++)
 	{
 	  free_and_init (tzd_raw->ds_rulesets[i].rules);
@@ -3449,7 +3462,6 @@ str_to_offset_rule_until (TZ_RAW_OFFSET_RULE * offset_rule, char *str)
   const char *str_cursor;
   const char *str_next;
   const char *str_end;
-  int year = 0;
   int val_read = 0;
   int type = -1, day = -1, bound = -1;
   int hour = 0, min = 0, sec = 0;
@@ -4163,27 +4175,38 @@ print_seconds_as_time_hms_var (int seconds)
 }
 
 /*
- * tzc_export_timezone_C_file () - saves all timezone data into a C source
+ * tzc_get_timezones_dot_c_filepath () - get path to timezones.c file in the CUBRID install folder
+ *
+ * size (in)                       : maximum name size
+ * timezones_dot_c_file_path (out) : output file path
+ */
+static void
+tzc_get_timezones_dot_c_filepath (size_t size, char *timezones_dot_c_file_path)
+{
+  char tz_cub_path[PATH_MAX] = { 0 };
+
+  envvar_cubrid_dir (tz_cub_path, sizeof (tz_cub_path));
+  tzc_build_filepath (timezones_dot_c_file_path, size, tz_cub_path, PATH_PARTIAL_TIMEZONES_FILE);
+}
+
+/*
+ * tzc_export_timezone_dot_c () - saves all timezone data into a C source
  *			      file to be later compiled into a shared library
  * Returns: always NO_ERROR
  * tzd(in): timezone data
+ * tz_C_filepath(in): timezones.c file path
  */
 static int
-tzc_export_timezone_C_file (const TZ_DATA * tzd)
+tzc_export_timezone_dot_c (const TZ_DATA * tzd, const char *timezones_dot_c_filepath)
 {
   int err_status = NO_ERROR;
-  char tz_C_filepath[PATH_MAX] = { 0 };
-  char tz_cub_path[PATH_MAX] = { 0 };
   TZ_OFFSET_RULE *offrule = NULL;
   int i;
   TZ_DS_RULE *rule = NULL;
   TZ_LEAP_SEC *leap_sec = NULL;
   FILE *fp;
 
-  envvar_cubrid_dir (tz_cub_path, sizeof (tz_cub_path));
-  tzc_build_filepath (tz_C_filepath, sizeof (tz_C_filepath), tz_cub_path, PATH_PARTIAL_TIMEZONES_FILE);
-
-  fp = fopen_ex (tz_C_filepath, "wt");
+  fp = fopen_ex (timezones_dot_c_filepath, "wt");
   if (fp == NULL)
     {
       err_status = TZC_ERR_GENERIC;
@@ -4815,7 +4838,8 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
   int max_len2, temp_len2;
   int max_len3;
 
-  printf ("\n COUNTRY MAX NAME LEN: ");
+  printf ("\n");
+  printf (" COUNTRY MAX NAME LEN: ");
   max_len = 0;
   for (i = 0; i < tzd_raw->country_count; i++)
     {
@@ -4825,9 +4849,9 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
 	  max_len = temp_len;
 	}
     }
-  printf ("%d", max_len);
+  printf ("%d\n", max_len);
 
-  printf ("\n DS RULES & RULESETS\n ");
+  printf (" DS RULES & RULESETS\n");
   max_len = 0;
   max_len2 = 0;
   for (i = 0; i < tzd_raw->ruleset_count; i++)
@@ -4851,9 +4875,9 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
 	}
     }
   printf ("   DS RULESET MAX NAME LEN: %d\n", max_len);
-  printf ("   DS RULE MAX LETTER_ABBREV LEN: %d\n", max_len2);
+  printf ("   DS RULE MAX LETTER_ABBREV LEN: %d\n\n", max_len2);
 
-  printf ("\n TIMEZONE\n ");
+  printf (" TIMEZONE\n");
   max_len = 0;
   max_len2 = 0;
   max_len3 = 0;
@@ -4883,9 +4907,9 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
     }
   printf ("   MAX NAME LEN: %d", max_len);
   printf ("   MAX comments LEN: %d", max_len2);
-  printf ("   MAX coordinates LEN: %d", max_len3);
+  printf ("   MAX coordinates LEN: %d\n", max_len3);
 
-  printf ("\n TZ_NAMES (timezone names and aliases) MAX NAME LEN: ");
+  printf (" TZ_NAMES (timezone names and aliases) MAX NAME LEN: ");
   max_len = 0;
   for (i = 0; i < tzd->name_count; i++)
     {
@@ -4895,9 +4919,9 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
 	  max_len = temp_len;
 	}
     }
-  printf ("%d", max_len);
+  printf ("%d\n", max_len);
 
-  printf ("\n TZ_RW_LINKS : \n");
+  printf (" TZ_RW_LINKS : \n");
   max_len = 0;
   max_len2 = 0;
   for (i = 0; i < tzd_raw->link_count; i++)
@@ -4914,10 +4938,10 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
 	}
     }
   printf ("   MAX NAME LEN: %d", max_len);
-  printf ("   MAX ALIAS LEN: %d", max_len2);
+  printf ("   MAX ALIAS LEN: %d\n", max_len2);
 
 
-  printf ("\n TZ_RAW_OFFSET_RULES : \n");
+  printf (" TZ_RAW_OFFSET_RULES : \n");
   max_len = 0;
   max_len2 = 0;
   for (i = 0; i < tzd_raw->zone_count; i++)
@@ -4940,32 +4964,7 @@ tzc_summary (TZ_RAW_DATA * tzd_raw, TZ_DATA * tzd)
 	}
     }
   printf ("   MAX rules LEN: %d", max_len);
-  printf ("   MAX format LEN: %d", max_len2);
-
-  printf ("\n TZ_RAW_DS_RULES & RULESETS: \n");
-  max_len = 0;
-  max_len2 = 0;
-  for (i = 0; i < tzd_raw->ruleset_count; i++)
-    {
-      TZ_RAW_ZONE_INFO *zone = &(tzd_raw->zones[i]);
-      for (j = 0; j < zone->offset_rule_count; j++)
-	{
-	  TZ_RAW_OFFSET_RULE *offrule = &(zone->offset_rules[j]);
-
-	  temp_len = strlen (offrule->ds_ruleset_name);
-	  if (temp_len > max_len)
-	    {
-	      max_len = temp_len;
-	    }
-	  temp_len = strlen (offrule->format);
-	  if (temp_len > max_len2)
-	    {
-	      max_len2 = temp_len;
-	    }
-	}
-    }
-  printf ("   MAX rules LEN: %d", max_len);
-  printf ("   MAX format LEN: %d", max_len2);
+  printf ("   MAX format LEN: %d\n", max_len2);
 }
 
 #if defined(WINDOWS)
@@ -5022,7 +5021,7 @@ xml_start_mapZone (void *data, const char **attr)
   int i;
 
   assert (data != NULL);
-  tz = XML_USER_DATA (pd);
+  tz = (TZ_DATA *) XML_USER_DATA (pd);
 
   if (xml_get_att_value (attr, "other", &windows_zone) == 0 && xml_get_att_value (attr, "territory", &territory) == 0
       && xml_get_att_value (attr, "type", &iana_zone) == 0)
@@ -6471,6 +6470,7 @@ tzc_compute_timezone_checksum (TZ_DATA * tzd, TZ_GEN_TYPE type)
   return error;
 }
 
+#if defined (SA_MODE)
 /*
  * execute_query() - Execute the query given by str
  *
@@ -6513,7 +6513,6 @@ exit:
   return error;
 }
 
-#if defined (SA_MODE)
 /*
  * tzc_update() - Do a data migration in case that tzc_extend fails 
  *

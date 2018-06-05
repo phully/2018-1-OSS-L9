@@ -23,8 +23,9 @@
 #ifndef _TZ_SUPPORT_H_
 #define _TZ_SUPPORT_H_
 
+#include "dbtype_def.h"
+#include "thread_compat.hpp"
 #include "timezone_lib_common.h"
-#include "thread.h"
 
 #define TZLIB_SYMBOL_NAME_SIZE 64
 #define MAX_LEN_OFFSET 10
@@ -108,12 +109,12 @@ enum
   ((r)->type == TZ_REGION_OFFSET && (r)->offset == 0)
 
 
-typedef enum tz_region_type TZ_REGION_TYPE;
 enum tz_region_type
 {
   TZ_REGION_OFFSET = 0,
   TZ_REGION_ZONE = 1
 };
+typedef enum tz_region_type TZ_REGION_TYPE;
 
 typedef struct tz_region TZ_REGION;
 struct tz_region

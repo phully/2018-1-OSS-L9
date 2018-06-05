@@ -27,6 +27,10 @@
 
 #ident "$Id$"
 
+#if defined (SERVER_MODE)
+#error Does not belong to server module
+#endif /* defined (SERVER_MODE) */
+
 #include "language_support.h"	/* for international string functions */
 #include "storage_common.h"	/* for HFID */
 #include "object_domain.h"	/* for TP_DOMAIN */
@@ -45,12 +49,13 @@
  * problems on the the root object so it was removed.  The list
  * of base classes is now generated manually by examining all classes.
  */
-typedef struct root_class ROOT_CLASS;
 
-struct root_class
-{
-  SM_CLASS_HEADER header;
-};
+/*
+ * Use full SM_CLASS definition for ROOT_CLASS, instead of just SM_CLASS_HEADER.
+ * This avoids to handle particular case of sm_Root_class object in many usage of 'au_fetch_class_..' functions.
+ * However serialization functions will use only the header part of the object.
+*/
+typedef SM_CLASS ROOT_CLASS;
 
 /*
  * Structure used when truncating a class and changing an attribute.
@@ -199,7 +204,7 @@ extern int sm_object_size_quick (SM_CLASS * class_, MOBJ obj);
 extern SM_CLASS_CONSTRAINT *sm_class_constraints (MOP classop);
 
 /* Locator support functions */
-extern const char *sm_ch_name (MOBJ clobj);
+extern const char *sm_ch_name (const MOBJ clobj);
 extern HFID *sm_ch_heap (MOBJ clobj);
 extern OID *sm_ch_rep_dir (MOBJ clobj);
 

@@ -922,7 +922,7 @@ $ LOADDB
 853 Per un oggetto (%1$d|%2$d|%3$d), transazione (%4$d) di una lettura non commessa stava tenendo uno blocco diffetoso (%5$s).
 854 ATTENZIONE: Nessun possessore di blocco, ma waiters di blocco esistono. Fare riferimento a %1$s.
 855 ATTENZIONE: Due o più dei threads sono in attesa di blocco per una operazione (%1$d).
-856 ATTENZIONE: Strano stato di lockwait (%1$d|%2$d), thread (%3$d|%4$d) e transazione (%5$d).
+856 ATTENZIONE: Strano stato di lockwait (%1$d|%2$d), thread (%3$d|%4$lld) e transazione (%5$d).
 857 Un errore I/O durante il troncamento della pagina %1$d di volume "%2$s".
 858 Volume "%1$s" è sconosciuto al riavvio del server.
 859 Blocco sulla pagina (%1$d|%2$d) è annulatto.
@@ -1263,7 +1263,27 @@ $ LOADDB
 1194 Impossibile verificare il file %1$d|%2$d perché il blocco sulla classe %3$d|%4$d|%5$d non viene immediatamente concesso.
 1195 La parte ricorsiva di un CTE non dovrebbe contenere funzioni aggregate senza la clausola GROUP BY.
 1196 Le ricorrenze massime %1$d estate raggiunto mentre l'esecuzione di CTE.
-1197 Ultimo errore
+1197 Invalid json: %1$s (%2$d)
+1198 A json object must be provided
+1199 The provided JSON has been invalidated by the JSON schema (Invalid schema path: %1$s, Keyword: %2$s, Invalid provided JSON path: %3$s)
+1200 Invalid JSON path
+1201 Json object name cannot be NULL.
+1202 Json PATH "%1$s" does not exist in %2$s
+1203 Invalid JSON type at path %1$s. Expected %2$s, but found %3$s.
+1204 Json KEY "%1$s" is duplicate
+1205 Reserved error for JSON.
+1206 Reserved error for JSON.
+1207 Reserved error for JSON.
+1208 Reserved error for JSON.
+1209 Reserved error for JSON.
+1210 Reserved error for JSON.
+1211 Reserved error for JSON.
+1212 Reserved error for JSON.
+1213 Reserved error for JSON.
+1214 Reserved error for JSON.
+
+1215 Ultimo errore
+
 $set 6 MSGCAT_SET_INTERNAL
 1 Errore nel sottosistema di errore (linea %1$d):
 2 Nessun messaggio di errore disponibile.

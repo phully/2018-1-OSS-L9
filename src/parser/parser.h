@@ -29,9 +29,14 @@
 
 #include <stdio.h>
 #include <stdarg.h>
-#include "dbtype.h"
+#include "system.h"
+#include "dbtype_def.h"
 #include "dbdef.h"
 #include "parse_tree.h"
+
+#if defined (SERVER_MODE)
+#error Does not belong to server module
+#endif /* SERVER_MODE */
 
 #ifdef __cplusplus
 extern "C"
@@ -214,6 +219,7 @@ extern "C"
   extern DB_DOMAIN *pt_string_to_db_domain (const char *s, const char *class_name);
 
   extern DB_VALUE *pt_value_to_db (PARSER_CONTEXT * parser, PT_NODE * value);
+  extern void pt_data_type_init_value (const PT_NODE * node, DB_VALUE * value_out);
 
   extern int pt_coerce_value (PARSER_CONTEXT * parser, PT_NODE * src, PT_NODE * dest, PT_TYPE_ENUM desired_type,
 			      PT_NODE * elem_type_list);
@@ -263,7 +269,7 @@ extern "C"
   extern void mq_free_virtual_query_cache (PARSER_CONTEXT * parser);
   extern PARSER_CONTEXT *mq_virtual_queries (DB_OBJECT * class_obj);
 
-  extern int pt_node_to_cmd_type (PT_NODE * node);
+  extern CUBRID_STMT_TYPE pt_node_to_cmd_type (PT_NODE * node);
 
   extern int pt_check_if_query (PARSER_CONTEXT * parser, PT_NODE * stmt);
 

@@ -27,11 +27,9 @@
 
 #ident "$Id$"
 
-#include "query_opfunc.h"
 #include "perf_monitor.h"
 #include "locator.h"
 #include "log_comm.h"
-#include "thread.h"
 
 
 /* Server statistics structure size, used to make sure the pack/unpack
@@ -107,8 +105,6 @@ enum net_server_request
   NET_SERVER_LC_CHECK_FK_VALIDITY,
   NET_SERVER_LC_REM_CLASS_FROM_INDEX,
   NET_SERVER_LC_UPGRADE_INSTANCES_DOMAIN,
-  NET_SERVER_LC_PREFETCH_REPL_INSERT,
-  NET_SERVER_LC_PREFETCH_REPL_UPDATE_OR_DELETE,
   NET_SERVER_LC_REPL_FORCE,
   NET_SERVER_LC_REDISTRIBUTE_PARTITION_DATA,
 
@@ -254,6 +250,16 @@ enum net_server_request
 #define NET_CAP_HA_REPL_DELAY           0x00000008
 #define NET_CAP_HA_REPLICA              0x00000004
 #define NET_CAP_HA_IGNORE_REPL_DELAY	0x00000002
+
+typedef enum
+{				/* Responses to a query */
+  QUERY_END = 1,		/* Normal end of query */
+  METHOD_CALL,			/* Invoke methods */
+  ASYNC_OBTAIN_USER_INPUT,	/* server needs info from operator */
+  GET_NEXT_LOG_PAGES,		/* log writer uses this type of request */
+  END_CALLBACK,			/* normal end of non-query callback */
+  CONSOLE_OUTPUT
+} QUERY_SERVER_REQUEST;
 
 /* Server startup */
 extern int net_server_start (const char *name);

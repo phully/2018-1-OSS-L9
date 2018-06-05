@@ -32,11 +32,11 @@
 
 #include <assert.h>
 
-#include "porting.h"
+#include "thread_compat.hpp"
+#include "heap_file.h"
+#include "dbtype.h"
 #include "boot_sr.h"
-#include "memory_alloc.h"
 #include "locator_sr.h"
-#include "query_manager.h"
 #include "set_object.h"
 #include "xserver_interface.h"
 #include "server_interface.h"
@@ -54,8 +54,6 @@ static int desc_disk_to_attr_info (THREAD_ENTRY * thread_p, OID * oid, RECDES * 
 static int process_class (THREAD_ENTRY * thread_p, OID * class_oid, HFID * hfid, int max_space_to_process,
 			  int *instance_lock_timeout, int *space_to_process, OID * last_processed_oid,
 			  int *total_objects, int *failed_objects, int *modified_objects, int *big_objects);
-static void free_att_id (THREAD_ENTRY * thread_p);
-
 
 /*
  * is_class () - check if an object is a class
@@ -96,7 +94,7 @@ process_value (THREAD_ENTRY * thread_p, DB_VALUE * value)
 	OID ref_class_oid;
 	HEAP_SCANCACHE scan_cache;
 
-	ref_oid = DB_GET_OID (value);
+	ref_oid = db_get_oid (value);
 
 	if (OID_ISNULL (ref_oid))
 	  {
@@ -138,7 +136,7 @@ process_value (THREAD_ENTRY * thread_p, DB_VALUE * value)
     case DB_TYPE_MULTISET:
     case DB_TYPE_SEQUENCE:
       {
-	return_value = process_set (thread_p, DB_GET_SET (value));
+	return_value = process_set (thread_p, db_get_set (value));
 	break;
       }
 
@@ -195,7 +193,6 @@ static int
 process_object (THREAD_ENTRY * thread_p, HEAP_SCANCACHE * upd_scancache, HEAP_CACHE_ATTRINFO * attr_info, OID * oid)
 {
   int i, result = 0;
-  int updated_flag = 0;
   HEAP_ATTRVALUE *value = NULL;
   int force_count = 0, updated_n_attrs_id = 0;
   int *atts_id = NULL;
@@ -523,7 +520,7 @@ boot_compact_db (THREAD_ENTRY * thread_p, OID * class_oids, int n_classes, int s
 {
   int result = NO_ERROR;
   int i, j, start_index = -1;
-  int max_space_to_process, current_tran_index = -1;
+  int max_space_to_process;
   int lock_ret;
   HFID hfid;
 

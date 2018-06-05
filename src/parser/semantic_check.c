@@ -41,10 +41,9 @@
 #include "xasl_generation.h"
 #include "view_transform.h"
 #include "show_meta.h"
+#include "partition.h"
 
-/* this must be the last header file included!!! */
-#include "dbval.h"
-
+#include "dbtype.h"
 #define PT_CHAIN_LENGTH 10
 
 typedef enum
@@ -61,6 +60,7 @@ typedef struct seman_compatible_info
   PT_TYPE_ENUM type_enum;
   int prec;
   int scale;
+  bool force_cast;
   PT_COLL_INFER coll_infer;
   const PT_NODE *ref_att;	/* column node having current compat info */
 } SEMAN_COMPATIBLE_INFO;
@@ -116,11 +116,13 @@ static PT_NODE *pt_get_common_type_for_union (PARSER_CONTEXT * parser, PT_NODE *
 static PT_NODE *pt_append_statements_on_add_attribute (PARSER_CONTEXT * parser, PT_NODE * statement_list,
 						       PT_NODE * stmt_node, const char *class_name,
 						       const char *attr_name, PT_NODE * attr);
+#if defined (ENABLE_UNUSED_FUNCTION)	/* to disable TEXT */
 static PT_NODE *pt_append_statements_on_change_default (PARSER_CONTEXT * parser, PT_NODE * statement_list,
 							PT_NODE * stmt_node, const char *class_name,
 							const char *attr_name, PT_NODE * value);
 static PT_NODE *pt_append_statements_on_drop_attributes (PARSER_CONTEXT * parser, PT_NODE * statement_list,
 							 const char *class_name_list);
+#endif
 static PT_NODE *pt_values_query_to_compatible_cast (PARSER_CONTEXT * parser, PT_NODE * node,
 						    SEMAN_COMPATIBLE_INFO * cinfo, int num_cinfo);
 static PT_NODE *pt_make_cast_with_compatible_info (PARSER_CONTEXT * parser, PT_NODE * att, PT_NODE * next_att,
@@ -167,7 +169,6 @@ static int pt_find_partition_column_count_func (PT_NODE * func, PT_NODE ** name_
 static int pt_find_partition_column_count (PT_NODE * expr, PT_NODE ** name_node);
 static int pt_value_links_add (PARSER_CONTEXT * parser, PT_NODE * val, PT_NODE * parts, PT_VALUE_LINKS * ptl);
 
-static int pt_check_partition_value_coercible (PT_TYPE_ENUM to, PT_TYPE_ENUM from);
 static int pt_check_partition_values (PARSER_CONTEXT * parser, PT_TYPE_ENUM desired_type, PT_NODE * data_type,
 				      PT_VALUE_LINKS * ptl, PT_NODE * parts);
 static void pt_check_partitions (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj);
@@ -401,10 +402,9 @@ pt_values_query_to_compatible_cast (PARSER_CONTEXT * parser, PT_NODE * node, SEM
 				    int num_cinfo)
 {
   PT_NODE *node_list, *result = node;
-  bool need_cast = false;
   int i;
   PT_NODE *attrs, *att;
-  PT_NODE *prev_att, *next_att, *new_att = NULL, *new_dt = NULL;
+  PT_NODE *prev_att, *next_att, *new_att = NULL;
   bool new_cast_added;
   bool need_to_cast;
   PT_NODE_LIST_INFO *cur_node_list_info;
@@ -569,6 +569,7 @@ pt_get_compatible_info (PARSER_CONTEXT * parser, PT_NODE * node, PT_NODE * selec
 		  cinfo[k].type_enum = PT_TYPE_NONE;
 		  cinfo[k].prec = DB_DEFAULT_PRECISION;
 		  cinfo[k].scale = DB_DEFAULT_SCALE;
+		  cinfo[k].force_cast = false;
 		  cinfo[k].coll_infer.coll_id = LANG_SYS_COLLATION;
 		  cinfo[k].coll_infer.codeset = LANG_SYS_CODESET;
 		  cinfo[k].coll_infer.coerc_level = PT_COLLATION_NOT_COERC;
@@ -1476,7 +1477,7 @@ pt_get_attributes (PARSER_CONTEXT * parser, const DB_OBJECT * c)
       name->info.name.meta_class = (db_attribute_is_shared (attributes) ? PT_SHARED : PT_NORMAL);
 
       /* set its data type */
-      i_attr->type_enum = (PT_TYPE_ENUM) pt_db_to_type_enum (db_attribute_type (attributes));
+      i_attr->type_enum = pt_db_to_type_enum (db_attribute_type (attributes));
       switch (i_attr->type_enum)
 	{
 	case PT_TYPE_OBJECT:
@@ -2226,7 +2227,7 @@ pt_union_compatible (PARSER_CONTEXT * parser, PT_NODE * item1, PT_NODE * item2, 
 	  data_type = parser_new_node (parser, PT_DATA_TYPE);
 	  if (data_type == NULL)
 	    {
-	      return ER_OUT_OF_VIRTUAL_MEMORY;
+	      return PT_UNION_ERROR;
 	    }
 	  data_type->info.data_type.precision =
 	    MAX ((ci1.prec - ci1.scale), (ci2.prec - ci2.scale)) + MAX (ci1.scale, ci2.scale);
@@ -2295,6 +2296,11 @@ pt_is_compatible_without_cast (PARSER_CONTEXT * parser, SEMAN_COMPATIBLE_INFO * 
   assert (is_cast_allowed != NULL);
 
   *is_cast_allowed = true;
+
+  if (dest_sci->force_cast && dest_sci->type_enum == PT_TYPE_JSON)
+    {
+      return false;
+    }
 
   if (dest_sci->type_enum != src->type_enum)
     {
@@ -2441,7 +2447,7 @@ pt_to_compatible_cast (PARSER_CONTEXT * parser, PT_NODE * node, SEMAN_COMPATIBLE
 		    {
 		      /* use collation and codeset of original attribute the values from cinfo are not usable */
 		      att_cinfo.coll_infer.coll_id = att->data_type->info.data_type.collation_id;
-		      att_cinfo.coll_infer.codeset = att->data_type->info.data_type.units;
+		      att_cinfo.coll_infer.codeset = (INTL_CODESET) att->data_type->info.data_type.units;
 		    }
 
 		  new_att = pt_make_cast_with_compatible_info (parser, att, next_att, &att_cinfo, &new_cast_added);
@@ -2524,6 +2530,7 @@ pt_get_compatible_info_from_node (const PT_NODE * att, SEMAN_COMPATIBLE_INFO * c
   cinfo->coll_infer.can_force_cs = false;
   cinfo->prec = cinfo->scale = 0;
   cinfo->ref_att = att;
+  cinfo->force_cast = false;
 
   cinfo->type_enum = att->type_enum;
 
@@ -2804,7 +2811,7 @@ pt_check_union_type_compatibility_of_values_query (PARSER_CONTEXT * parser, PT_N
   SEMAN_COMPATIBLE_INFO *cinfo_arg1 = NULL;
   SEMAN_COMPATIBLE_INFO *cinfo_arg2 = NULL;
   SEMAN_COMPATIBLE_INFO *cinfo_arg3 = NULL;
-  bool need_cast, need_cast_tmp = false;
+  bool need_cast;
   PT_NODE *arg1, *arg2, *tmp;
   bool is_compatible;
 
@@ -4029,7 +4036,7 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 	  if (op_type != -1)
 	    {
 	      PT_ERRORmf (parser, node_ptr, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_NESTED_EXPR_NOT_ALLOWED,
-			  pt_show_binopcode (op_type));
+			  pt_show_binopcode ((PT_OP_TYPE) op_type));
 	      goto end;
 	    }
 	}
@@ -4106,7 +4113,6 @@ pt_attr_check_default_cs_coll (PARSER_CONTEXT * parser, PT_NODE * attr, int defa
     {
       /* coerce each element of enum to actual attribute codeset */
       PT_NODE *elem = NULL;
-      int er = NO_ERROR;
 
       elem = attr->data_type->info.data_type.enumeration;
       while (elem != NULL)
@@ -4141,7 +4147,7 @@ pt_attr_check_default_cs_coll (PARSER_CONTEXT * parser, PT_NODE * attr, int defa
 		    }
 		  else if (elem->info.value.db_value_is_initialized)
 		    {
-		      dt->info.data_type.precision = DB_GET_STRING_SIZE (&(elem->info.value.db_value));
+		      dt->info.data_type.precision = db_get_string_size (&(elem->info.value.db_value));
 		    }
 		}
 
@@ -4477,7 +4483,6 @@ pt_check_attribute_domain (PARSER_CONTEXT * parser, PT_NODE * attr_defs, PT_MISC
   PT_NODE *def, *att, *dtyp, *sdtyp;
   DB_OBJECT *cls;
   const char *att_nam, *typ_nam, *styp_nam;
-  PT_NODE *node = NULL, *temp = NULL;
 
   for (def = attr_defs; def != NULL && def->node_type == PT_ATTR_DEF; def = def->next)
     {
@@ -5200,7 +5205,6 @@ static int
 pt_find_partition_column_count_func (PT_NODE * func, PT_NODE ** name_node)
 {
   int cnt = 0, ret;
-  int num_args = 0, err = NO_ERROR;
   PT_NODE *f_arg;
 
   if (func == NULL)
@@ -5217,6 +5221,16 @@ pt_find_partition_column_count_func (PT_NODE * func, PT_NODE ** name_node)
     {
     case F_INSERT_SUBSTRING:
     case F_ELT:
+    case F_JSON_OBJECT:
+    case F_JSON_ARRAY:
+    case F_JSON_INSERT:
+    case F_JSON_REPLACE:
+    case F_JSON_SET:
+    case F_JSON_KEYS:
+    case F_JSON_REMOVE:
+    case F_JSON_ARRAY_APPEND:
+    case F_JSON_MERGE:
+    case F_JSON_GET_ALL_PATHS:
       break;
     default:
       return 0;			/* unsupported function */
@@ -5644,8 +5658,8 @@ pt_check_partition_values (PARSER_CONTEXT * parser, PT_TYPE_ENUM desired_type, P
 
 	  error = ER_FAILED;
 	  PT_ERRORmf2 (parser, val, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_PARTITION_VAL_CODESET,
-		       lang_charset_introducer (val_codeset),
-		       lang_charset_introducer (data_type->info.data_type.units));
+		       lang_charset_introducer ((INTL_CODESET) val_codeset),
+		       lang_charset_introducer ((INTL_CODESET) data_type->info.data_type.units));
 	  break;
 	}
 
@@ -5828,7 +5842,7 @@ pt_check_partitions (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj)
 	    {
 	      if (!intl_identifier_casecmp (column->original_name, pcol->info.name.original))
 		{
-		  pcol->type_enum = (PT_TYPE_ENUM) pt_db_to_type_enum (column->db_type);
+		  pcol->type_enum = pt_db_to_type_enum (column->db_type);
 
 		  assert (column->domain != NULL);
 		  pcol->data_type = pt_domain_to_data_type (parser, column->domain);
@@ -5859,7 +5873,7 @@ pt_check_partitions (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj)
 		      PT_ERRORm (parser, stmt, MSGCAT_SET_PARSER_SEMANTIC,
 				 MSGCAT_SEMANTIC_INVALID_PARTITION_INHERITED_ATTR);
 		    }
-		  pcol->type_enum = (PT_TYPE_ENUM) pt_db_to_type_enum (smatt->type->id);
+		  pcol->type_enum = pt_db_to_type_enum (smatt->type->id);
 		  assert (smatt->domain != NULL);
 		  pcol->data_type = pt_domain_to_data_type (parser, smatt->domain);
 		  pinfo->info.partition.keycol = parser_copy_tree (parser, pcol);
@@ -6088,7 +6102,7 @@ partition_range_min_max (DB_VALUE ** dest, DB_VALUE * inval, int min_max)
 
   if (inval == NULL)
     {
-      DB_MAKE_NULL (&nullval);
+      db_make_null (&nullval);
       inval = &nullval;
     }
 
@@ -6158,7 +6172,7 @@ db_value_list_add (DB_VALUE_PLIST ** ptail, DB_VALUE * val)
 
   if (val == NULL)
     {
-      DB_MAKE_NULL (&nullval);
+      db_make_null (&nullval);
       chkval = &nullval;
     }
   else
@@ -6207,7 +6221,7 @@ db_value_list_find (const DB_VALUE_PLIST * phead, const DB_VALUE * val)
 
   if (val == NULL)
     {
-      DB_MAKE_NULL (&nullval);
+      db_make_null (&nullval);
       chkval = &nullval;
     }
   else
@@ -6245,7 +6259,7 @@ db_value_list_finddel (DB_VALUE_PLIST ** phead, DB_VALUE * val)
 
   if (val == NULL)
     {
-      DB_MAKE_NULL (&nullval);
+      db_make_null (&nullval);
       chkval = &nullval;
     }
   else
@@ -6297,7 +6311,6 @@ pt_check_alter_partition (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj)
   PT_NODE *names, *parts, *val, *next_parts;
   PT_ALTER_CODE cmd;
   SM_CLASS *smclass, *subcls;
-  SM_ATTRIBUTE *keyattr = NULL;
   DB_OBJLIST *objs;
   int i, setsize;
   int orig_cnt = 0, name_cnt = 0, parts_cnt = 0, chkflag = 0;
@@ -6324,9 +6337,9 @@ pt_check_alter_partition (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj)
       return;
     }
 
-  DB_MAKE_NULL (&minele);
-  DB_MAKE_NULL (&maxele);
-  DB_MAKE_NULL (&null_val);
+  db_make_null (&minele);
+  db_make_null (&maxele);
+  db_make_null (&null_val);
 
   class_name = (char *) stmt->info.alter.entity_name->info.name.original;
   cmd = stmt->info.alter.code;
@@ -6504,7 +6517,7 @@ pt_check_alter_partition (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj)
       goto check_end;
     }
 
-  DB_MAKE_NULL (&null_val);
+  db_make_null (&null_val);
   for (objs = smclass->users; objs; objs = objs->next)
     {
       if (au_fetch_class (objs->op, &subcls, AU_FETCH_READ, AU_SELECT) != NO_ERROR)
@@ -6520,8 +6533,8 @@ pt_check_alter_partition (PARSER_CONTEXT * parser, PT_NODE * stmt, MOP dbobj)
 
       orig_cnt++;
 
-      DB_MAKE_NULL (&minele);
-      DB_MAKE_NULL (&maxele);
+      db_make_null (&minele);
+      db_make_null (&maxele);
 
       if (psize == NULL)
 	{			/* RANGE or LIST */
@@ -7220,17 +7233,14 @@ pt_check_vclass_union_spec (PARSER_CONTEXT * parser, PT_NODE * qry, PT_NODE * at
       return NULL;
     }
 
-  for (attrd = attrds, att1 = attrs1, att2 = attrs2; attrd != NULL;
-       attrd = attrd->next, att1 = att1->next, att2 = att2->next)
+  for (attrd = attrds, att1 = attrs1, att2 = attrs2;
+       attrd != NULL && att1 != NULL && att2 != NULL; attrd = attrd->next, att1 = att1->next, att2 = att2->next)
     {
       /* bypass any class_attribute in the vclass attribute defs */
       if (attrd->info.attr_def.attr_type == PT_META_ATTR)
 	{
 	  continue;
 	}
-
-      assert (att1 != NULL);
-      assert (att2 != NULL);
 
       /* we have a vclass attribute def context, so do union vclass compatibility checks where applicable */
       if (attrd->type_enum != PT_TYPE_OBJECT)
@@ -7258,8 +7268,7 @@ pt_check_vclass_union_spec (PARSER_CONTEXT * parser, PT_NODE * qry, PT_NODE * at
 	}
     }
 
-  assert (att1 == NULL);
-  assert (att2 == NULL);
+  assert (attrd == NULL && att1 == NULL && att2 == NULL);
 
   return qry;
 }
@@ -7399,14 +7408,8 @@ pt_check_vclass_query_spec (PARSER_CONTEXT * parser, PT_NODE * qry, PT_NODE * at
 	}
     }
 
-  (void) parser_walk_tree (parser, qry, pt_check_cyclic_reference_in_view_spec, self, NULL, NULL);
+  (void) parser_walk_tree (parser, qry, pt_check_cyclic_reference_in_view_spec, (void *) self, NULL, NULL);
   if (pt_has_error (parser))
-    {
-      return NULL;
-    }
-
-  qry = pt_check_vclass_union_spec (parser, qry, attrs);
-  if (pt_has_error (parser) || qry == NULL)
     {
       return NULL;
     }
@@ -7418,6 +7421,12 @@ pt_check_vclass_query_spec (PARSER_CONTEXT * parser, PT_NODE * qry, PT_NODE * at
   if (attr_count != col_count)
     {
       PT_ERRORmf2 (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_ATT_CNT_NE_COL_CNT, attr_count, col_count);
+      return NULL;
+    }
+
+  qry = pt_check_vclass_union_spec (parser, qry, attrs);
+  if (pt_has_error (parser) || qry == NULL)
+    {
       return NULL;
     }
 
@@ -7902,7 +7911,6 @@ pt_check_create_view (PARSER_CONTEXT * parser, PT_NODE * stmt)
   PT_NODE *prev_qry;
   const char *name = NULL;
   int attr_count = 0;
-  SEMANTIC_CHK_INFO sc_info = { NULL, NULL, 0, 0, 0, false, false };
 
   assert (parser != NULL);
 
@@ -8302,7 +8310,7 @@ pt_check_create_entity (PARSER_CONTEXT * parser, PT_NODE * node)
     }
   else
     {
-      if (er_errid () == ER_LC_UNKNOWN_CLASSNAME && er_severity () == ER_WARNING_SEVERITY)
+      if (er_errid () == ER_LC_UNKNOWN_CLASSNAME && er_get_severity () == ER_WARNING_SEVERITY)
 	{
 	  /* Because the class is still inexistent, normally, here we will have to encounter some errors/warnings like
 	   * ER_LC_UNKNOWN_CLASSNAME which is unuseful for current context indeed and may disturb other subsequent
@@ -8928,7 +8936,7 @@ pt_check_method (PARSER_CONTEXT * parser, PT_NODE * node)
 
   assert (node != NULL && node->info.method_call.method_name != NULL);
 
-  DB_MAKE_NULL (&val);
+  db_make_null (&val);
 
   /* check if call has a target */
   target = node->info.method_call.on_call_target;
@@ -8985,7 +8993,7 @@ pt_check_method (PARSER_CONTEXT * parser, PT_NODE * node)
 	   * if we are not already doing this. Also we probably shouldn't get PT_VALUES here now that parameters are
 	   * not bound until runtime (but we'll guard against them anyway). */
 	  if (((target->node_type != PT_NAME) || (target->info.name.meta_class != PT_PARAMETER)
-	       || !pt_eval_path_expr (parser, target, &val) || db_is_instance (DB_GET_OBJECT (&val)) <= 0)
+	       || !pt_eval_path_expr (parser, target, &val) || db_is_instance (db_get_object (&val)) <= 0)
 	      && target->node_type != PT_VALUE
 	      && (target->data_type->info.data_type.entity->info.name.meta_class != PT_META_CLASS))
 	    {
@@ -9001,7 +9009,7 @@ pt_check_method (PARSER_CONTEXT * parser, PT_NODE * node)
        * if we are not already doing this. Also we probably shouldn't get PT_VALUES here now that parameters are not
        * bound until runtime (but we'll guard against them anyway). */
       if (((target->node_type != PT_NAME) || (target->info.name.meta_class != PT_PARAMETER)
-	   || !pt_eval_path_expr (parser, target, &val) || db_is_instance (DB_GET_OBJECT (&val)) <= 0)
+	   || !pt_eval_path_expr (parser, target, &val) || db_is_instance (db_get_object (&val)) <= 0)
 	  && target->node_type != PT_VALUE
 	  && (target->data_type->info.data_type.entity->info.name.meta_class != PT_CLASS))
 	{
@@ -9305,7 +9313,6 @@ pt_semantic_check_local (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int
   PT_NODE *t_node;
   PT_NODE *entity, *derived_table;
   PT_ASSIGNMENTS_HELPER ea;
-  PT_NODE *sort_spec = NULL;
   STATEMENT_SET_FOLD fold_as;
   PT_FUNCTION_INFO *func_info_p = NULL;
 
@@ -11078,10 +11085,10 @@ pt_assignment_compatible (PARSER_CONTEXT * parser, PT_NODE * lhs, PT_NODE * rhs)
     }
   else
     {
-      int p = 0, s = 0;
       SEMAN_COMPATIBLE_INFO sci = {
-	0, PT_TYPE_NONE, 0, 0,
-	{0, INTL_CODESET_NONE, PT_COLLATION_NOT_COERC, false},
+	0, PT_TYPE_NONE, 0, 0, false,
+	{0, INTL_CODESET_NONE, PT_COLLATION_NOT_COERC, false}
+	,
 	NULL
       };
       bool is_cast_allowed = true;
@@ -11091,6 +11098,10 @@ pt_assignment_compatible (PARSER_CONTEXT * parser, PT_NODE * lhs, PT_NODE * rhs)
 	{
 	  sci.prec = lhs->data_type->info.data_type.precision;
 	  sci.scale = lhs->data_type->info.data_type.dec_precision;
+	  if (lhs->type_enum == PT_TYPE_JSON && lhs->data_type->info.data_type.json_schema != NULL)
+	    {
+	      sci.force_cast = true;
+	    }
 	}
 
       if (PT_HAS_COLLATION (lhs->type_enum))
@@ -11427,7 +11438,7 @@ static PT_NODE *
 pt_replace_names_in_update_values (PARSER_CONTEXT * parser, PT_NODE * update)
 {
   PT_NODE *attr = NULL, *val = NULL;
-  PT_NODE *node = NULL, *prev = NULL, *save_next = NULL;
+  PT_NODE *node = NULL, *prev = NULL;
 
   if (!prm_get_bool_value (PRM_ID_UPDATE_USE_ATTRIBUTE_REFERENCES))
     {
@@ -12336,7 +12347,7 @@ int
 pt_check_order_by (PARSER_CONTEXT * parser, PT_NODE * query)
 {
   PT_NODE *select_list, *order_by, *col, *r, *temp, *order, *match;
-  int n, i, select_list_len;
+  int n, i, select_list_len, select_list_full_len;
   bool ordbynum_flag;
   char *r_str = NULL;
   int error;
@@ -12487,7 +12498,12 @@ pt_check_order_by (PARSER_CONTEXT * parser, PT_NODE * query)
     }
 
   /* save original length of select_list */
+  select_list_len = 0;
+  select_list_full_len = pt_length_of_select_list (select_list, INCLUDE_HIDDEN_COLUMNS);
+#if !defined (NDEBUG)
   select_list_len = pt_length_of_select_list (select_list, EXCLUDE_HIDDEN_COLUMNS);
+#endif /* !NDEBUG */
+
   for (order = order_by; order; order = order->next)
     {
       /* get the EXPR */
@@ -12504,7 +12520,7 @@ pt_check_order_by (PARSER_CONTEXT * parser, PT_NODE * query)
 	    {
 	      n = r->info.value.data_value.i;
 	      /* check size of the integer */
-	      if (n > select_list_len || n < 1)
+	      if (select_list_full_len < n || n < 1)
 		{
 		  error = MSGCAT_SEMANTIC_SORT_SPEC_RANGE_ERR;
 		  PT_ERRORmf (parser, r, MSGCAT_SET_PARSER_SEMANTIC, error, n);
@@ -12517,6 +12533,9 @@ pt_check_order_by (PARSER_CONTEXT * parser, PT_NODE * query)
 		    {
 		      col = col->next;
 		    }
+
+		  /* sorting node should be either an existing select node or an hidden column added by system */
+		  assert (n <= select_list_len || col->is_hidden_column);
 
 		  if (col->node_type == PT_EXPR && col->info.expr.op == PT_ORDERBY_NUM)
 		    {
@@ -12863,7 +12882,6 @@ pt_coerce_insert_values (PARSER_CONTEXT * parser, PT_NODE * stmt)
   PT_NODE *v = NULL, *a = NULL, *crt_list = NULL;
   int a_cnt = 0, v_cnt = 0;
   PT_NODE *prev = NULL;
-  PT_NODE_LIST_INFO *values_list = NULL;
   PT_NODE *attr_list = NULL;
   PT_NODE *value_clauses = NULL;
 
@@ -13609,7 +13627,6 @@ pt_check_defaultf (PARSER_CONTEXT * parser, PT_NODE * node)
 static int
 pt_check_auto_increment_table_option (PARSER_CONTEXT * parser, PT_NODE * create)
 {
-  int i = 0;
   PT_NODE *attr = NULL;
   PT_NODE *auto_inc_attr = NULL;
   PT_NODE *start_val = NULL;
@@ -14815,7 +14832,6 @@ pt_check_filter_index_expr_post (PARSER_CONTEXT * parser, PT_NODE * node, void *
 static PT_NODE *
 pt_check_filter_index_expr_pre (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_walk)
 {
-  bool *is_valid = (bool *) arg;
   PT_FILTER_INDEX_INFO *info = (PT_FILTER_INDEX_INFO *) arg;
   assert (info != NULL);
 
@@ -15098,6 +15114,13 @@ pt_check_filter_index_expr_pre (PARSER_CONTEXT * parser, PT_NODE * node, void *a
 	  }
 	  break;
 
+	case PT_FUNCTION_HOLDER:
+	  PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC,
+		      MSGCAT_SEMANTIC_FUNCTION_CANNOT_BE_USED_FOR_FILTER_INDEX,
+		      pt_show_function (node->info.expr.arg1->info.function.function_type));
+	  info->is_valid_expr = false;
+	  break;
+
 	default:
 	  PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC,
 		      MSGCAT_SEMANTIC_FUNCTION_CANNOT_BE_USED_FOR_FILTER_INDEX, pt_show_binopcode (node->info.expr.op));
@@ -15117,6 +15140,16 @@ pt_check_filter_index_expr_pre (PARSER_CONTEXT * parser, PT_NODE * node, void *a
 	  /* the functions above are used in the argument IN (values list) expression */
 	case F_ELT:
 	case F_INSERT_SUBSTRING:
+	case F_JSON_OBJECT:
+	case F_JSON_ARRAY:
+	case F_JSON_INSERT:
+	case F_JSON_REPLACE:
+	case F_JSON_SET:
+	case F_JSON_KEYS:
+	case F_JSON_REMOVE:
+	case F_JSON_ARRAY_APPEND:
+	case F_JSON_MERGE:
+	case F_JSON_GET_ALL_PATHS:
 	  /* valid expression, nothing to do */
 	  break;
 	default:
@@ -15177,7 +15210,7 @@ pt_check_filter_index_expr_pre (PARSER_CONTEXT * parser, PT_NODE * node, void *a
 	{
 	  if (node->info.value.db_value_is_initialized && DB_VALUE_TYPE (&node->info.value.db_value) == DB_TYPE_INTEGER)
 	    {
-	      if (DB_GET_INT (&node->info.value.db_value) == 0)
+	      if (db_get_int (&node->info.value.db_value) == 0)
 		{
 		  info->is_valid_expr = false;
 		}
@@ -15617,7 +15650,7 @@ pt_check_range_partition_strict_increasing (PARSER_CONTEXT * parser, PT_NODE * s
 		      || (pt_val1->data_type->info.data_type.collation_id ==
 			  column_dt->info.data_type.collation_id)))));
 
-  DB_MAKE_NULL (&null_val);
+  db_make_null (&null_val);
 
   /* next value */
   if (part_next != NULL)
@@ -15684,7 +15717,7 @@ pt_check_range_partition_strict_increasing (PARSER_CONTEXT * parser, PT_NODE * s
 	}
       else if (!DB_IS_NULL (db_val2))
 	{
-	  compare_result = db_value_compare (db_val1, db_val2);
+	  compare_result = (DB_VALUE_COMPARE_RESULT) db_value_compare (db_val1, db_val2);
 	  if (compare_result != DB_LT)
 	    {
 	      /* this is an error */

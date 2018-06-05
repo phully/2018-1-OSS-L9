@@ -32,27 +32,18 @@
 #include <time.h>
 #include <assert.h>
 
-#include "porting.h"
 #include "log_manager.h"
-#include "log_impl.h"
-#include "log_comm.h"
 #include "recovery.h"
-#include "boot_sr.h"
-#include "locator_sr.h"
-#include "disk_manager.h"
-#include "page_buffer.h"
-#include "file_io.h"
-#include "storage_common.h"
 #include "error_manager.h"
-#include "memory_alloc.h"
 #include "system_parameter.h"
 #include "message_catalog.h"
-#if defined(SERVER_MODE)
-#include "connection_error.h"
-#include "thread.h"
-#endif /* SERVER_MODE */
+#include "slotted_page.h"
+#include "boot_sr.h"
+#include "locator_sr.h"
+#include "page_buffer.h"
 #include "log_compress.h"
-#include "vacuum.h"
+#include "thread_entry.hpp"
+#include "thread_manager.hpp"
 
 static void log_rv_undo_record (THREAD_ENTRY * thread_p, LOG_LSA * log_lsa, LOG_PAGE * log_page_p,
 				LOG_RCVINDEX rcvindex, const VPID * rcv_vpid, LOG_RCV * rcv,
@@ -98,7 +89,7 @@ static void log_rv_analysis_record (THREAD_ENTRY * thread_p, LOG_RECTYPE log_typ
 				    time_t * stop_at, bool * did_incom_recovery, bool * may_use_checkpoint,
 				    bool * may_need_synch_checkpoint_2pc);
 static void log_recovery_analysis (THREAD_ENTRY * thread_p, LOG_LSA * start_lsa, LOG_LSA * start_redolsa,
-				   LOG_LSA * end_redo_lsa, int ismedia_crash, time_t * stopat,
+				   LOG_LSA * end_redo_lsa, bool ismedia_crash, time_t * stopat,
 				   bool * did_incom_recovery, INT64 * num_redo_log_records);
 static void log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const LOG_LSA * end_redo_lsa,
 			       time_t * stopat);
@@ -165,7 +156,7 @@ log_rv_undo_record (THREAD_ENTRY * thread_p, LOG_LSA * log_lsa, LOG_PAGE * log_p
   TRAN_STATE save_state;	/* The current state of the transaction. Must be returned to this state */
   bool is_zip = false;
   int error_code = NO_ERROR;
-  int save_thread_type = 0;
+  thread_type save_thread_type = thread_type::TT_NONE;
 
   if (thread_p == NULL)
     {
@@ -176,7 +167,7 @@ log_rv_undo_record (THREAD_ENTRY * thread_p, LOG_LSA * log_lsa, LOG_PAGE * log_p
   if (LOG_IS_VACUUM_THREAD_TRANID (tdes->trid))
     {
       /* Convert thread to a vacuum worker. */
-      VACUUM_CONVERT_THREAD_TO_VACUUM (thread_p, vacuum_rv_get_worker_by_trid (thread_p, tdes->trid), save_thread_type);
+      vacuum_rv_convert_thread_to_vacuum (thread_p, tdes->trid, save_thread_type);
 
       vacuum_er_log (VACUUM_ER_LOG_RECOVERY | VACUUM_ER_LOG_TOPOPS,
 		     "Log undo (%lld, %d), rcvindex=%d for tdes: tdes->trid=%d.",
@@ -413,7 +404,7 @@ end:
   /* Convert thread back to system transaction. */
   if (LOG_IS_VACUUM_THREAD_TRANID (tdes->trid))
     {
-      VACUUM_RESTORE_THREAD (thread_p, save_thread_type);
+      vacuum_restore_thread (thread_p, (thread_type) save_thread_type);
     }
   else
     {
@@ -696,6 +687,9 @@ log_recovery (THREAD_ENTRY * thread_p, int ismedia_crash, time_t * stopat)
       logpb_fatal_error (thread_p, true, ARG_FILE_LINE, "log_recovery:LOG_HAS_LOGGING_BEEN_IGNORED");
       log_Gl.hdr.has_logging_been_skipped = false;
     }
+
+  er_log_debug (ARG_FILE_LINE, "RECOVERY: start with %lld|%d and stop at %lld", LSA_AS_ARGS (&log_Gl.hdr.chkpt_lsa),
+		stopat != NULL ? *stopat : -1);
 
   /* Find the starting LSA for the analysis phase */
 
@@ -2358,7 +2352,7 @@ log_rv_analysis_record (THREAD_ENTRY * thread_p, LOG_RECTYPE log_type, int tran_
 
 static void
 log_recovery_analysis (THREAD_ENTRY * thread_p, LOG_LSA * start_lsa, LOG_LSA * start_redo_lsa, LOG_LSA * end_redo_lsa,
-		       int is_media_crash, time_t * stop_at, bool * did_incom_recovery, INT64 * num_redo_log_records)
+		       bool is_media_crash, time_t * stop_at, bool * did_incom_recovery, INT64 * num_redo_log_records)
 {
   LOG_LSA checkpoint_lsa = { -1, -1 };
   LOG_LSA lsa;			/* LSA of log record to analyse */
@@ -3056,13 +3050,11 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 		{
 		  fprintf (stdout,
 			   "TRACE REDOING[1]: LSA = %lld|%d, Rv_index = %s,\n"
-			   "      volid = %d, pageid = %d, offset = %d,\n", (long long int) rcv_lsa.pageid,
-			   (int) rcv_lsa.offset, rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid,
-			   rcv.offset);
+			   "      volid = %d, pageid = %d, offset = %d,\n", LSA_AS_ARGS (&rcv_lsa),
+			   rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid, rcv.offset);
 		  if (rcv_page_lsaptr != NULL)
 		    {
-		      fprintf (stdout, "      page_lsa = %lld|%d\n", (long long int) rcv_page_lsaptr->pageid,
-			       rcv_page_lsaptr->offset);
+		      fprintf (stdout, "      page_lsa = %lld|%d\n", LSA_AS_ARGS (rcv_page_lsaptr));
 		    }
 		  else
 		    {
@@ -3134,8 +3126,6 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 
 	      if (redo->data.rcvindex == RVVAC_COMPLETE)
 		{
-		  LOG_LSA null_lsa = LSA_INITIALIZER;
-
 		  /* Reset log header MVCC info */
 		  logpb_vacuum_reset_log_header_cache (thread_p, &log_Gl.hdr);
 		}
@@ -3193,13 +3183,11 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 		{
 		  fprintf (stdout,
 			   "TRACE REDOING[2]: LSA = %lld|%d, Rv_index = %s,\n"
-			   "      volid = %d, pageid = %d, offset = %d,\n", (long long int) rcv_lsa.pageid,
-			   (int) rcv_lsa.offset, rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid,
-			   rcv.offset);
+			   "      volid = %d, pageid = %d, offset = %d,\n", LSA_AS_ARGS (&rcv_lsa),
+			   rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid, rcv.offset);
 		  if (rcv_page_lsaptr != NULL)
 		    {
-		      fprintf (stdout, "      page_lsa = %lld|%d\n", (long long int) rcv_page_lsaptr->pageid,
-			       rcv_page_lsaptr->offset);
+		      fprintf (stdout, "      page_lsa = %lld|%d\n", LSA_AS_ARGS (rcv_page_lsaptr));
 		    }
 		  else
 		    {
@@ -3240,8 +3228,8 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 #if !defined(NDEBUG)
 	      if (prm_get_bool_value (PRM_ID_LOG_TRACE_DEBUG))
 		{
-		  fprintf (stdout, "TRACE EXT REDOING[3]: LSA = %lld|%d, Rv_index = %s\n",
-			   (long long int) rcv_lsa.pageid, rcv_lsa.offset, rv_rcvindex_string (rcvindex));
+		  fprintf (stdout, "TRACE EXT REDOING[3]: LSA = %lld|%d, Rv_index = %s\n", LSA_AS_ARGS (&rcv_lsa),
+			   rv_rcvindex_string (rcvindex));
 		  fflush (stdout);
 		}
 #endif /* !NDEBUG */
@@ -3314,13 +3302,11 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 		{
 		  fprintf (stdout,
 			   "TRACE REDOING[4]: LSA = %lld|%d, Rv_index = %s,\n"
-			   "      volid = %d, pageid = %d, offset = %d,\n", (long long int) rcv_lsa.pageid,
-			   (int) rcv_lsa.offset, rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid,
-			   rcv.offset);
+			   "      volid = %d, pageid = %d, offset = %d,\n", LSA_AS_ARGS (&rcv_lsa),
+			   rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid, rcv.offset);
 		  if (rcv_page_lsaptr != NULL)
 		    {
-		      fprintf (stdout, "      page_lsa = %lld|%d\n", (long long int) rcv_page_lsaptr->pageid,
-			       rcv_page_lsaptr->offset);
+		      fprintf (stdout, "      page_lsa = %lld|%d\n", LSA_AS_ARGS (rcv_page_lsaptr));
 		    }
 		  else
 		    {
@@ -3402,13 +3388,11 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 		{
 		  fprintf (stdout,
 			   "TRACE REDOING[5]: LSA = %lld|%d, Rv_index = %s,\n"
-			   "      volid = %d, pageid = %d, offset = %d,\n", (long long int) rcv_lsa.pageid,
-			   (int) rcv_lsa.offset, rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid,
-			   rcv.offset);
+			   "      volid = %d, pageid = %d, offset = %d,\n", LSA_AS_ARGS (&rcv_lsa),
+			   rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid, rcv.offset);
 		  if (rcv_page_lsaptr != NULL)
 		    {
-		      fprintf (stdout, "      page_lsa = %lld|%d\n", (long long int) rcv_page_lsaptr->pageid,
-			       rcv_page_lsaptr->offset);
+		      fprintf (stdout, "      page_lsa = %lld|%d\n", LSA_AS_ARGS (rcv_page_lsaptr));
 		    }
 		  else
 		    {
@@ -4030,7 +4014,7 @@ log_recovery_finish_all_postpone (THREAD_ENTRY * thread_p)
 {
   int i;
   int save_tran_index;
-  int save_thread_type = 0;
+  thread_type save_thread_type = thread_type::TT_NONE;
   TRANID trid;
   LOG_TDES *tdes = NULL;	/* Transaction descriptor */
   VACUUM_WORKER *worker = NULL;
@@ -4060,7 +4044,7 @@ log_recovery_finish_all_postpone (THREAD_ENTRY * thread_p)
 	  /* Nothing to do */
 	  continue;
 	}
-      VACUUM_CONVERT_THREAD_TO_VACUUM (thread_p, worker, save_thread_type);
+      vacuum_rv_convert_thread_to_vacuum (thread_p, trid, save_thread_type);
       tdes = worker->tdes;
 
       vacuum_er_log (VACUUM_ER_LOG_RECOVERY | VACUUM_ER_LOG_TOPOPS,
@@ -4070,7 +4054,7 @@ log_recovery_finish_all_postpone (THREAD_ENTRY * thread_p)
       log_recovery_finish_postpone (thread_p, tdes);
 
       /* Restore thread */
-      VACUUM_RESTORE_THREAD (thread_p, save_thread_type);
+      vacuum_restore_thread (thread_p, save_thread_type);
     }
 }
 
@@ -4085,7 +4069,7 @@ log_recovery_abort_all_atomic_sysops (THREAD_ENTRY * thread_p)
 {
   int i;
   int save_tran_index;
-  int save_thread_type = 0;
+  thread_type save_thread_type = thread_type::TT_NONE;
   TRANID trid;
   LOG_TDES *tdes = NULL;	/* Transaction descriptor */
   VACUUM_WORKER *worker = NULL;
@@ -4115,7 +4099,7 @@ log_recovery_abort_all_atomic_sysops (THREAD_ENTRY * thread_p)
 	  /* Nothing to do */
 	  continue;
 	}
-      VACUUM_CONVERT_THREAD_TO_VACUUM (thread_p, worker, save_thread_type);
+      vacuum_rv_convert_thread_to_vacuum (thread_p, trid, save_thread_type);
       tdes = worker->tdes;
 
       vacuum_er_log (VACUUM_ER_LOG_RECOVERY | VACUUM_ER_LOG_TOPOPS,
@@ -4126,7 +4110,7 @@ log_recovery_abort_all_atomic_sysops (THREAD_ENTRY * thread_p)
       worker->state = VACUUM_WORKER_STATE_RECOVERY;
 
       /* Restore thread */
-      VACUUM_RESTORE_THREAD (thread_p, save_thread_type);
+      vacuum_restore_thread (thread_p, save_thread_type);
     }
 }
 
@@ -4484,9 +4468,8 @@ log_recovery_undo (THREAD_ENTRY * thread_p)
 		    {
 		      fprintf (stdout,
 			       "TRACE UNDOING[2]: LSA = %lld|%d, Rv_index = %s,\n"
-			       "      volid = %d, pageid = %d, offset = %d,\n", (long long int) rcv_lsa.pageid,
-			       rcv_lsa.offset, rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid,
-			       rcv.offset);
+			       "      volid = %d, pageid = %d, offset = %hd,\n", LSA_AS_ARGS (&rcv_lsa),
+			       rv_rcvindex_string (rcvindex), rcv_vpid.volid, rcv_vpid.pageid, rcv.offset);
 		      fflush (stdout);
 		    }
 #endif /* !NDEBUG */
@@ -5542,9 +5525,6 @@ log_recovery_find_first_postpone (THREAD_ENTRY * thread_p, LOG_LSA * ret_lsa, LO
   int nxtop_count = 0;
   bool start_postpone_lsa_wasapplied = false;
 
-  LOG_REC_SYSOP_END *topop_result = NULL;
-  bool found_commit_with_postpone = false;
-
   assert (ret_lsa && start_postpone_lsa && tdes);
 
   LSA_SET_NULL (ret_lsa);
@@ -5943,7 +5923,6 @@ log_rv_record_modify_internal (THREAD_ENTRY * thread_p, LOG_RCV * rcv, bool is_u
   PGSLOTID slotid = rcv->offset & (~LOG_RV_RECORD_MODIFY_MASK);
   RECDES record;
   char data_buffer[IO_MAX_PAGE_SIZE + MAX_ALIGNMENT];
-  INT16 rec_type = REC_UNKNOWN;
   char *ptr = NULL;
   int error_code = NO_ERROR;
 

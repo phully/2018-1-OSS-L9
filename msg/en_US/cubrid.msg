@@ -922,7 +922,7 @@ $ LOADDB
 853 For an object(%1$d|%2$d|%3$d), tran(%4$d) of Uncommitted Read held fault lock(%5$s).
 854 WARNING: No lock holder, but lock waiters exist. refer to %1$s.
 855 WARNING: Two or more threads are lock-waiting for one transaction(%1$d).
-856 WARNING: Strange lockwait state(%1$d|%2$d), thread(%3$d|%4$d) and transaction(%5$d).
+856 WARNING: Strange lockwait state(%1$d|%2$d), thread(%3$d|%4$lld) and transaction(%5$d).
 857 An I/O error occurred while truncating page %1$d of volume "%2$s".
 858 Volume "%1$s" is unknown at server restart.
 859 LATCH ON PAGE(%1$d|%2$d) ABORTED
@@ -1263,7 +1263,27 @@ $ LOADDB
 1194 Unable to check file %1$d|%2$d because lock on class %3$d|%4$d|%5$d is not immediately granted.
 1195 The recursive part of a CTE should not contain aggregate functions without GROUP BY clause.
 1196 Maximum recursions %1$d reached executing CTE.
-1197 Last Error
+1197 Invalid json: %1$s (%2$d)
+1198 A json object must be provided
+1199 The provided JSON has been invalidated by the JSON schema (Invalid schema path: %1$s, Keyword: %2$s, Invalid provided JSON path: %3$s)
+1200 Invalid JSON path
+1201 Json object name cannot be NULL.
+1202 Json PATH "%1$s" does not exist in %2$s
+1203 Invalid JSON type at path %1$s. Expected %2$s, but found %3$s.
+1204 Json KEY "%1$s" is duplicate
+1205 Reserved error for JSON.
+1206 Reserved error for JSON.
+1207 Reserved error for JSON.
+1208 Reserved error for JSON.
+1209 Reserved error for JSON.
+1210 Reserved error for JSON.
+1211 Reserved error for JSON.
+1212 Reserved error for JSON.
+1213 Reserved error for JSON.
+1214 Reserved error for JSON.
+
+1215 Last Error
+
 $set 6 MSGCAT_SET_INTERNAL
 1 Error in error subsystem (line %1$d):
 2 No error message available.
@@ -1802,7 +1822,7 @@ $set 9 MSGCAT_SET_PARSER_RUNTIME
 79 Invalid isolation level: %1$s schema, %2$s instances.
 80 Isolation level value in MVCC must be 'read committed', 'repeatable read' or 'serializable'.
 81 '%1$s' is an 'auto_increment' object, which is not allowed to be altered as a serial.
-
+82 Invalid JSON: '%1$s'.
 
 $set 11 MSGCAT_SET_AUTHORIZATION
 1 *** invalid cache ***
