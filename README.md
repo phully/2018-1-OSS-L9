@@ -70,4 +70,4 @@ MEMBER
 static page
 ===========
 - http://34.201.172.110/wordpress/
-- https://rubybee.github.io/Moon/
+- https://rubybee.github.io/Moon/  (edit site https://github.com/rubybee/Moon)
