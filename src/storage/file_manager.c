@@ -51,17 +51,13 @@
 #include "heap_file.h"
 #include "bit.h"
 #include "util_func.h"
-
+#include "vacuum.h"
 #include "critical_section.h"
 #if defined(SERVER_MODE)
 #include "connection_error.h"
 #endif /* SERVER_MODE */
-
-#if !defined (SERVER_MODE)
-#include "transaction_cl.h"
-#endif
-
 #include "fault_injection.h"
+#include "thread_manager.hpp"	// for thread_get_thread_entry_info
 
 /************************************************************************/
 /* Define structures, globals, and macro's                              */
@@ -945,6 +941,16 @@ file_header_sanity_check (THREAD_ENTRY * thread_p, FILE_HEADER * fhead)
       assert (fhead->n_sector_total == fhead->n_sector_full);
     }
 
+  // in some scenario with many file manipulation operations, next checks may be too slow. They gradually stack and
+  // waiting times for file headers grow continuously.
+  // skip the check if there are waiters on file header.
+  // don't skip if file logging is activated. it means a bug in file manipulation is investigated and header checks may
+  // be valuable.
+  if (!prm_get_bool_value (PRM_ID_FILE_LOGGING) && pgbuf_has_any_waiters ((PAGE_PTR) fhead))
+    {
+      return;
+    }
+
   er_stack_push ();
 
   FILE_HEADER_GET_PART_FTAB (fhead, part_table);
@@ -1643,7 +1649,6 @@ STATIC_INLINE void
 file_extdata_merge_ordered (const FILE_EXTENSIBLE_DATA * extdata_src, FILE_EXTENSIBLE_DATA * extdata_dest,
 			    int (*compare_func) (const void *, const void *))
 {
-  int n_merged = 0;
   char *dest_ptr;
   char *dest_end_ptr;
   const char *src_ptr;
@@ -3814,7 +3819,7 @@ exit:
       if (was_temp_reserved)
 	{
 	  /* recovery won't free reserved sectors. we have to manually handle the unreserve */
-	  bool save_check_interrupt = thread_set_check_interrupt (thread_p, false);
+	  bool save_check_interrupt = logtb_set_check_interrupt (thread_p, false);
 
 	  /* make sure sectors are sorted */
 	  qsort (vsids_reserved, n_sectors, sizeof (VSID), disk_compare_vsids);
@@ -3825,7 +3830,7 @@ exit:
 	      assert_release (false);
 	      /* fall through */
 	    }
-	  (void) thread_set_check_interrupt (thread_p, save_check_interrupt);
+	  (void) logtb_set_check_interrupt (thread_p, save_check_interrupt);
 	}
     }
 
@@ -4008,7 +4013,7 @@ file_destroy (THREAD_ENTRY * thread_p, const VFID * vfid, bool is_temp)
   if (is_temp)
     {
       /* do not interrupt destroying temporary files. it will leak pages. */
-      save_check_interrupt = thread_set_check_interrupt (thread_p, false);
+      save_check_interrupt = logtb_set_check_interrupt (thread_p, false);
     }
   else
     {
@@ -4155,7 +4160,7 @@ exit:
     }
   if (is_temp)
     {
-      (void) thread_set_check_interrupt (thread_p, save_check_interrupt);
+      (void) logtb_set_check_interrupt (thread_p, save_check_interrupt);
     }
   return error_code;
 }
@@ -5011,8 +5016,6 @@ file_perm_alloc (THREAD_ENTRY * thread_p, PAGE_PTR page_fhead, FILE_ALLOC_TYPE a
   if (file_extdata_is_empty (extdata_part_ftab))
     {
       /* we know we have free pages, so we should have partial sectors in other table pages */
-      PAGE_PTR page_ftab_free = NULL;
-
       error_code = file_table_move_partial_sectors_to_header (thread_p, page_fhead, alloc_type, vpid_alloc_out);
       if (error_code != NO_ERROR)
 	{
@@ -5803,7 +5806,6 @@ file_perm_dealloc (THREAD_ENTRY * thread_p, PAGE_PTR page_fhead, const VPID * vp
   VSID vsid_dealloc;
   bool is_empty = false;
   bool was_full = false;
-  bool is_ftab = (alloc_type == FILE_ALLOC_TABLE_PAGE);
   LOG_DATA_ADDR addr = LOG_DATA_ADDR_INITIALIZER;
   int offset_to_dealloc_bit;
   PAGE_PTR page_dealloc = NULL;
@@ -6109,7 +6111,6 @@ file_rv_dealloc_internal (THREAD_ENTRY * thread_p, LOG_RCV * rcv, bool compensat
   int offset = 0;
   FILE_HEADER *fhead = NULL;
   bool is_sysop_started = false;
-  PAGE_PTR page_dealloc = NULL;
   int error_code = NO_ERROR;
 
   /* how it works:
@@ -8049,11 +8050,10 @@ file_temp_alloc (THREAD_ENTRY * thread_p, PAGE_PTR page_fhead, FILE_ALLOC_TYPE a
   FILE_EXTENSIBLE_DATA *extdata_part_ftab = NULL;
   PAGE_PTR page_ftab = NULL;
   FILE_PARTIAL_SECTOR *partsect = NULL;
-  PAGE_PTR page_extdata = NULL;
   bool was_empty = false;
   bool is_full = false;
   /* we don't have rollback, so don't interrupt */
-  bool save_check_interrupt = thread_set_check_interrupt (thread_p, false);
+  bool save_check_interrupt = logtb_set_check_interrupt (thread_p, false);
   int error_code = NO_ERROR;
 
   file_header_sanity_check (thread_p, fhead);
@@ -8275,7 +8275,7 @@ exit:
     {
       pgbuf_unfix_and_init (thread_p, page_ftab);
     }
-  (void) thread_set_check_interrupt (thread_p, save_check_interrupt);
+  (void) logtb_set_check_interrupt (thread_p, save_check_interrupt);
   return error_code;
 }
 
@@ -8349,7 +8349,7 @@ file_temp_reset_user_pages (THREAD_ENTRY * thread_p, const VFID * vfid)
   int error_code = NO_ERROR;
 
   /* don't let this be interrupted, because we might ruin the file */
-  save_interrupt = thread_set_check_interrupt (thread_p, false);
+  save_interrupt = logtb_set_check_interrupt (thread_p, false);
 
   FILE_GET_HEADER_VPID (vfid, &vpid_fhead);
   page_fhead = pgbuf_fix (thread_p, &vpid_fhead, OLD_PAGE, PGBUF_LATCH_WRITE, PGBUF_UNCONDITIONAL_LATCH);
@@ -8493,7 +8493,7 @@ exit:
       pgbuf_unfix (thread_p, page_fhead);
     }
 
-  (void) thread_set_check_interrupt (thread_p, save_interrupt);
+  (void) logtb_set_check_interrupt (thread_p, save_interrupt);
 
   if (collector.partsect_ftab != NULL)
     {
@@ -8999,7 +8999,7 @@ STATIC_INLINE int
 file_get_tempcache_entry_index (THREAD_ENTRY * thread_p)
 {
 #if defined (SERVER_MODE)
-  return thread_get_current_tran_index ();
+  return logtb_get_current_tran_index ();
 #else
   return 0;
 #endif
@@ -9579,7 +9579,6 @@ file_tracker_apply_to_file (THREAD_ENTRY * thread_p, const VFID * vfid, PGBUF_LA
   bool for_write = (mode == PGBUF_LATCH_WRITE);
   bool found = false;
   int pos = -1;
-  FILE_TRACK_ITEM *item_in_page = NULL;
   int error_code = NO_ERROR;
 
   assert (func != NULL);
@@ -10034,9 +10033,6 @@ file_tracker_reclaim_marked_deleted (THREAD_ENTRY * thread_p)
   VPID vpid_next;
   VFID vfid;
   int idx_item;
-
-  VPID vpid_merged = VPID_INITIALIZER;
-
   int error_code = NO_ERROR;
 
   assert (!VPID_ISNULL (&file_Tracker_vpid));
@@ -10657,14 +10653,6 @@ file_tracker_item_dump_heap_capacity (THREAD_ENTRY * thread_p, PAGE_PTR page_of_
   FILE_TRACK_ITEM *item;
   HFID hfid;
   FILE *fp = (FILE *) args;
-  INT64 num_recs = 0;
-  INT64 num_recs_relocated = 0;
-  INT64 num_recs_inovf = 0;
-  INT64 num_pages = 0;
-  int avg_freespace = 0;
-  int avg_freespace_nolast = 0;
-  int avg_reclength = 0;
-  int avg_overhead = 0;
   int error_code = NO_ERROR;
 
   item = (FILE_TRACK_ITEM *) file_extdata_at (extdata, index_item);

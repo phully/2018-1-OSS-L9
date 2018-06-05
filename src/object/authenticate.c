@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <assert.h>
 
 #include "porting.h"
 #include "misc_string.h"
@@ -68,7 +69,11 @@
 #include "execute_statement.h"
 #include "optimizer.h"
 #include "network_interface_cl.h"
-#include "dbval.h"		/* this must be the last header file included */
+#include "dbtype.h"
+
+#if defined (SUPPRESS_STRLEN_WARNING)
+#define strlen(s1)  ((int) strlen(s1))
+#endif /* defined (SUPPRESS_STRLEN_WARNING) */
 
 #if defined(SA_MODE)
 extern bool catcls_Enable;
@@ -174,13 +179,13 @@ const char *AU_DBA_USER_NAME = "DBA";
          strcmp(name, CT_AUTHORIZATIONS_NAME) == 0 || \
 	 strcmp(name, CT_CHARSET_NAME) == 0)
 
-typedef enum fetch_by FETCH_BY;
 enum fetch_by
 {
   DONT_KNOW,			/* Don't know the mop is a class os an instance */
   BY_INSTANCE_MOP,		/* fetch a class by an instance mop */
   BY_CLASS_MOP			/* fetch a class by the class mop */
 };
+typedef enum fetch_by FETCH_BY;
 
 /*
  * AU_GRANT
@@ -1541,11 +1546,12 @@ au_set_new_auth (MOP au_obj, MOP grantor, MOP user, MOP class_mop, DB_AUTH auth_
       return er_errid ();
     }
 
-  db_make_string (&class_name_val, sm_get_ch_name (class_mop));
+  db_make_string_by_const_str (&class_name_val, sm_get_ch_name (class_mop));
   db_class_inst = obj_find_unique (db_class, "class_name", &class_name_val, AU_FETCH_READ);
   if (db_class_inst == NULL)
     {
       assert (er_errid () != NO_ERROR);
+      pr_clear_value (&class_name_val);
       return er_errid ();
     }
 
@@ -1563,6 +1569,7 @@ au_set_new_auth (MOP au_obj, MOP grantor, MOP user, MOP class_mop, DB_AUTH auth_
   db_make_int (&value, (int) grant_option);
   obj_set (au_obj, "is_grantable", &value);
 
+  pr_clear_value (&class_name_val);
   return NO_ERROR;
 }
 
@@ -1642,13 +1649,13 @@ au_get_new_auth (MOP grantor, MOP user, MOP class_mop, DB_AUTH auth_type)
       er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SM_INVALID_CLASS, 0);
       goto exit;
     }
-  db_make_string (&val[INDEX_FOR_CLASS_NAME], class_name);
+  db_make_string_by_const_str (&val[INDEX_FOR_CLASS_NAME], class_name);
 
   for (type = DB_AUTH_SELECT, i = 0; type != auth_type; type = (DB_AUTH) (type << 1), i++)
     {
       ;
     }
-  db_make_string (&val[INDEX_FOR_AUTH_TYPE], type_set[i]);
+  db_make_string_by_const_str (&val[INDEX_FOR_AUTH_TYPE], type_set[i]);
 
   session = db_open_buffer (sql_query);
   if (session == NULL)
@@ -2043,7 +2050,7 @@ au_delete_auth_of_dropping_table (const char *class_name)
       goto release;
     }
 
-  db_make_string (&val, class_name);
+  db_make_string_by_const_str (&val, class_name);
   error = db_push_values (session, 1, &val);
   if (error != NO_ERROR)
     {
@@ -2065,6 +2072,8 @@ release:
     }
 
 exit:
+  pr_clear_value (&val);
+
   AU_ENABLE (save);
 
   return error;
@@ -2830,8 +2839,9 @@ au_set_user_comment (MOP user, const char *comment)
 	}
       else
 	{
-	  db_make_string (&value, comment);
+	  db_make_string_by_const_str (&value, comment);
 	  error = obj_set (user, "comment", &value);
+	  pr_clear_value (&value);
 	}
     }
   AU_RESTORE (save);
@@ -3799,11 +3809,7 @@ get_grants (MOP auth, DB_SET ** grant_ptr, int filter)
 
   *grant_ptr = NULL;
 
-  error = er_stack_push ();
-  if (error != NO_ERROR)
-    {
-      goto end;
-    }
+  er_stack_push ();
 
   need_pop_er_stack = true;
 
@@ -3847,7 +3853,7 @@ get_grants (MOP auth, DB_SET ** grant_ptr, int filter)
       grantor = NULL;
       if (DB_VALUE_TYPE (&value) == DB_TYPE_OBJECT && !DB_IS_NULL (&value))
 	{
-	  grantor = db_pull_object (&value);
+	  grantor = db_get_object (&value);
 	  if (WS_IS_DELETED (grantor))
 	    {
 	      grantor = NULL;
@@ -3865,7 +3871,7 @@ get_grants (MOP auth, DB_SET ** grant_ptr, int filter)
 
 	  if (DB_VALUE_TYPE (&value) == DB_TYPE_OBJECT && !DB_IS_NULL (&value))
 	    {
-	      class_ = db_pull_object (&value);
+	      class_ = db_get_object (&value);
 	      if (WS_IS_DELETED (class_))
 		{
 		  class_ = NULL;
@@ -3957,11 +3963,11 @@ end:
     {
       if (error == NO_ERROR)
 	{
-	  (void) er_stack_pop ();
+	  er_stack_pop ();
 	}
       else
 	{
-	  er_stack_clear ();
+	  er_stack_pop_and_keep_error ();
 	}
     }
 
@@ -4035,11 +4041,7 @@ update_cache (MOP classop, SM_CLASS * sm_class, AU_CLASS_CACHE * cache)
    */
   AU_DISABLE (save);
 
-  error = er_stack_push ();
-  if (error != NO_ERROR)
-    {
-      goto end;
-    }
+  er_stack_push ();
 
   need_pop_er_stack = true;
 
@@ -4170,11 +4172,11 @@ end:
     {
       if (error == NO_ERROR)
 	{
-	  (void) er_stack_pop ();
+	  er_stack_pop ();
 	}
       else
 	{
-	  er_stack_clear ();
+	  er_stack_pop_and_keep_error ();
 	}
     }
 
@@ -4487,13 +4489,15 @@ au_grant (MOP user, MOP class_mop, DB_AUTH type, bool grant_option)
 		  if (ins_bits)
 		    {
 		      error =
-			au_insert_new_auth (Au_user, user, class_mop, ins_bits, (grant_option) ? ins_bits : false);
+			au_insert_new_auth (Au_user, user, class_mop, ins_bits,
+					    (grant_option) ? ins_bits : DB_AUTH_NONE);
 		    }
 		  upd_bits = (DB_AUTH) (~ins_bits & (int) type);
 		  if ((error == NO_ERROR) && upd_bits)
 		    {
 		      error =
-			au_update_new_auth (Au_user, user, class_mop, upd_bits, (grant_option) ? upd_bits : false);
+			au_update_new_auth (Au_user, user, class_mop, upd_bits,
+					    (grant_option) ? upd_bits : DB_AUTH_NONE);
 		    }
 		}
 
@@ -5342,7 +5346,7 @@ au_change_serial_owner_method (MOP obj, DB_VALUE * returnval, DB_VALUE * serial,
   MOP serial_class_mop;
   DB_IDENTIFIER serial_obj_id;
   char *serial_name, *owner_name;
-  int error = NO_ERROR, found = 0;
+  int error = NO_ERROR;
 
   db_make_null (returnval);
 
@@ -5517,7 +5521,7 @@ au_get_owner_method (MOP obj, DB_VALUE * returnval, DB_VALUE * class_)
   db_make_null (returnval);
   if (class_ != NULL && IS_STRING (class_) && !DB_IS_NULL (class_) && db_get_string (class_) != NULL)
     {
-      classmop = sm_find_class (db_pull_string (class_));
+      classmop = sm_find_class (db_get_string (class_));
       if (classmop != NULL)
 	{
 	  user = au_get_class_owner (classmop);
@@ -5567,7 +5571,7 @@ au_check_authorization_method (MOP obj, DB_VALUE * returnval, DB_VALUE * class_,
   if (class_ != NULL && IS_STRING (class_) && !DB_IS_NULL (class_) && db_get_string (class_) != NULL)
     {
 
-      classmop = sm_find_class (db_pull_string (class_));
+      classmop = sm_find_class (db_get_string (class_));
       if (classmop != NULL)
 	{
 	  error = au_check_authorization (classmop, (DB_AUTH) db_get_int (auth));
@@ -7000,7 +7004,7 @@ au_export_users (FILE * outfp)
 		       * copy password string using malloc
 		       * to be consistent with encrypt_password
 		       */
-		      str = db_pull_string (&value);
+		      str = db_get_string (&value);
 		      if (IS_ENCODED_DES (str))
 			{
 			  /* strip off the prefix so its readable */
@@ -8663,7 +8667,7 @@ au_check_serial_authorization (MOP serial_object)
       return ret_val;
     }
 
-  creator = DB_GET_OBJECT (&creator_val);
+  creator = db_get_object (&creator_val);
 
   ret_val = ER_QPROC_CANNOT_UPDATE_SERIAL;
 

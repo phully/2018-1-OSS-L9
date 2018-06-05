@@ -31,13 +31,7 @@
 #include "jansson.h"
 
 #include "error_manager.h"
-#include "memory_alloc.h"
-#include "page_buffer.h"
-#include "slotted_page.h"
-#include "btree.h"
 #include "heap_file.h"
-#include "object_representation.h"
-#include "object_representation_sr.h"
 #include "fetch.h"
 #include "list_file.h"
 #include "set_scan.h"
@@ -45,14 +39,10 @@
 #include "btree_load.h"
 #include "perf_monitor.h"
 #include "query_manager.h"
-#include "xasl_support.h"
-#include "xserver_interface.h"
-#include "tsc_timer.h"
-#include "mvcc.h"
 #include "locator_sr.h"
-
-/* this must be the last header file included!!! */
-#include "dbval.h"
+#include "object_primitive.h"
+#include "query_opfunc.h"
+#include "dbtype.h"
 
 #if !defined(SERVER_MODE)
 #define pthread_mutex_init(a, b)
@@ -174,11 +164,11 @@ static int scan_init_index_key_limit (THREAD_ENTRY * thread_p, INDX_SCAN_ID * is
 				      VAL_DESCR * vd);
 static SCAN_CODE scan_next_scan_local (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
 static SCAN_CODE scan_next_heap_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
-static int scan_next_heap_page_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
+static SCAN_CODE scan_next_heap_page_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
 static SCAN_CODE scan_next_class_attr_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
 static SCAN_CODE scan_next_index_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
-static int scan_next_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
-static int scan_next_index_node_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
+static SCAN_CODE scan_next_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
+static SCAN_CODE scan_next_index_node_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
 static SCAN_CODE scan_next_index_lookup_heap (THREAD_ENTRY * thread_p, SCAN_ID * scan_id, INDX_SCAN_ID * isidp,
 					      FILTER_INFO * data_filter, TRAN_ISOLATION isolation);
 static SCAN_CODE scan_next_list_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id);
@@ -234,7 +224,7 @@ scan_init_iss (INDX_SCAN_ID * isidp)
       return NO_ERROR;
     }
 
-  iss->use = isidp->indx_info->use_iss;
+  iss->use = isidp->indx_info->use_iss != 0;
 
   if (!iss->use)
     {
@@ -262,7 +252,7 @@ scan_init_iss (INDX_SCAN_ID * isidp)
   if (!DB_IS_NULL (last_key))
     {
       pr_clear_value (last_key);
-      DB_MAKE_NULL (last_key);
+      db_make_null (last_key);
     }
 
   return NO_ERROR;
@@ -458,7 +448,7 @@ scan_get_next_iss_value (THREAD_ENTRY * thread_p, SCAN_ID * scan_id, INDX_SCAN_I
 	  if (DB_IS_NULL (last_key))
 	    {
 	      pr_clear_value (last_key);
-	      DB_MAKE_NULL (last_key);
+	      db_make_null (last_key);
 
 	      return S_END;
 	    }
@@ -840,7 +830,7 @@ scan_init_index_key_limit (THREAD_ENTRY * thread_p, INDX_SCAN_ID * isidp, KEY_IN
 	}
       else
 	{
-	  isidp->key_limit_lower = DB_GET_BIGINT (dbvalp);
+	  isidp->key_limit_lower = db_get_bigint (dbvalp);
 	}
 
       if (isidp->key_limit_lower < 0)
@@ -891,7 +881,7 @@ scan_init_index_key_limit (THREAD_ENTRY * thread_p, INDX_SCAN_ID * isidp, KEY_IN
 	}
       else
 	{
-	  isidp->key_limit_upper = DB_GET_BIGINT (dbvalp);
+	  isidp->key_limit_upper = db_get_bigint (dbvalp);
 	}
 
       if (isidp->key_limit_upper < 0)
@@ -1065,7 +1055,7 @@ scan_free_iscan_oid_buf_list (BTREE_ISCAN_OID_LIST * oid_list)
   /* Free entry. */
   rv = pthread_mutex_lock (&scan_Iscan_oid_buf_list_mutex);
   /* Is buffer at its full capacity? */
-  if (scan_Iscan_oid_buf_list_count < thread_num_worker_threads ())
+  if (scan_Iscan_oid_buf_list_count < MAX_NTRANS)
     {
       /* Add oid_list to scan_Iscan_oid_buf_list */
       oid_list->next_list = scan_Iscan_oid_buf_list;
@@ -1174,7 +1164,7 @@ scan_key_compare (DB_VALUE * val1, DB_VALUE * val2, int num_index_term)
       if (key_type == DB_TYPE_MIDXKEY)
 	{
 	  rc =
-	    pr_midxkey_compare (DB_GET_MIDXKEY (val1), DB_GET_MIDXKEY (val2), 1, 1, num_index_term, NULL, &dummy_size1,
+	    pr_midxkey_compare (db_get_midxkey (val1), db_get_midxkey (val2), 1, 1, num_index_term, NULL, &dummy_size1,
 				&dummy_size2, &dummy_diff_column, &dummy_dom_is_desc, &dummy_next_dom_is_desc);
 	}
       else
@@ -1275,7 +1265,6 @@ compare_val_op (DB_VALUE * val1, ROP_TYPE op1, DB_VALUE * val2, ROP_TYPE op2, in
 static int
 key_val_compare (const void *p1, const void *p2)
 {
-  int rc = DB_UNK;
   int p1_num_index_term, p2_num_index_term;
   DB_VALUE *p1_key, *p2_key;
 
@@ -1408,7 +1397,7 @@ merge_key_ranges (KEY_VAL_RANGE * key_vals, int key_cnt)
 	    {
 	      pr_clear_value (&curp->key1);
 	      curp->key1 = nextp->key1;	/* bitwise copy */
-	      DB_MAKE_NULL (&nextp->key1);
+	      db_make_null (&nextp->key1);
 	      cur_op1 = next_op1;
 	    }
 	  else
@@ -1421,7 +1410,7 @@ merge_key_ranges (KEY_VAL_RANGE * key_vals, int key_cnt)
 	    {
 	      pr_clear_value (&curp->key2);
 	      curp->key2 = nextp->key2;	/* bitwise copy */
-	      DB_MAKE_NULL (&nextp->key2);
+	      db_make_null (&nextp->key2);
 	      cur_op2 = next_op2;
 	    }
 	  else
@@ -1597,7 +1586,7 @@ scan_dbvals_to_midxkey (THREAD_ENTRY * thread_p, DB_VALUE * retval, bool * index
 	  if (has_coerced_values == NULL)
 	    {
 	      assert (has_coerced_values == NULL && coerced_values == NULL);
-	      coerced_values = db_private_alloc (thread_p, sizeof (DB_VALUE) * idx_ncols);
+	      coerced_values = (DB_VALUE *) db_private_alloc (thread_p, sizeof (DB_VALUE) * idx_ncols);
 	      if (coerced_values == NULL)
 		{
 		  goto err_exit;
@@ -1607,7 +1596,7 @@ scan_dbvals_to_midxkey (THREAD_ENTRY * thread_p, DB_VALUE * retval, bool * index
 		  db_make_null (&coerced_values[j]);
 		}
 
-	      has_coerced_values = db_private_alloc (thread_p, sizeof (bool) * idx_ncols);
+	      has_coerced_values = (bool *) db_private_alloc (thread_p, sizeof (bool) * idx_ncols);
 	      if (has_coerced_values == NULL)
 		{
 		  goto err_exit;
@@ -2226,8 +2215,8 @@ scan_get_index_oidset (THREAD_ENTRY * thread_p, SCAN_ID * s_id, DB_BIGINT * key_
 	{
 	  /* initialize DB_VALUE first for error case */
 	  key_vals[i].range = NA_NA;
-	  DB_MAKE_NULL (&key_vals[i].key1);
-	  DB_MAKE_NULL (&key_vals[i].key2);
+	  db_make_null (&key_vals[i].key1);
+	  db_make_null (&key_vals[i].key2);
 	  key_vals[i].is_truncated = false;
 	  key_vals[i].num_index_term = 0;
 	}
@@ -2350,7 +2339,7 @@ scan_get_index_oidset (THREAD_ENTRY * thread_p, SCAN_ID * s_id, DB_BIGINT * key_
 	}
 
       ret =
-	btree_prepare_bts (thread_p, bts, &indx_infop->indx_id.i.btid, iscan_id, &key_vals[0], &key_filter,
+	btree_prepare_bts (thread_p, bts, &indx_infop->btid, iscan_id, &key_vals[0], &key_filter,
 			   &iscan_id->cls_oid, key_limit_upper, key_limit_lower, true, NULL);
       if (ret != NO_ERROR)
 	{
@@ -2436,7 +2425,7 @@ scan_get_index_oidset (THREAD_ENTRY * thread_p, SCAN_ID * s_id, DB_BIGINT * key_
 
       key_vals[0].range = range;
       ret =
-	btree_prepare_bts (thread_p, bts, &indx_infop->indx_id.i.btid, iscan_id, &key_vals[0], &key_filter,
+	btree_prepare_bts (thread_p, bts, &indx_infop->btid, iscan_id, &key_vals[0], &key_filter,
 			   &iscan_id->cls_oid, key_limit_upper, key_limit_lower, true, NULL);
       if (ret != NO_ERROR)
 	{
@@ -2492,7 +2481,7 @@ scan_get_index_oidset (THREAD_ENTRY * thread_p, SCAN_ID * s_id, DB_BIGINT * key_
 	    }
 
 	  ret =
-	    btree_prepare_bts (thread_p, bts, &indx_infop->indx_id.i.btid, iscan_id, &key_vals[iscan_id->curr_keyno],
+	    btree_prepare_bts (thread_p, bts, &indx_infop->btid, iscan_id, &key_vals[iscan_id->curr_keyno],
 			       &key_filter, &iscan_id->cls_oid, key_limit_upper, key_limit_lower, true, NULL);
 	  if (ret != NO_ERROR)
 	    {
@@ -2611,7 +2600,7 @@ scan_get_index_oidset (THREAD_ENTRY * thread_p, SCAN_ID * s_id, DB_BIGINT * key_
 
 	  key_vals[iscan_id->curr_keyno].range = range;
 	  ret =
-	    btree_prepare_bts (thread_p, bts, &indx_infop->indx_id.i.btid, iscan_id, &key_vals[iscan_id->curr_keyno],
+	    btree_prepare_bts (thread_p, bts, &indx_infop->btid, iscan_id, &key_vals[iscan_id->curr_keyno],
 			       &key_filter, &iscan_id->cls_oid, key_limit_upper, key_limit_lower, true, NULL);
 	  if (ret != NO_ERROR)
 	    {
@@ -3030,7 +3019,7 @@ scan_open_index_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
 		     vd);
 
   /* read Root page header info */
-  btid = &indx_info->indx_id.i.btid;
+  btid = &indx_info->btid;
 
   Root_vpid.pageid = btid->root_pageid;
   Root_vpid.volid = btid->vfid.volid;
@@ -3094,7 +3083,7 @@ scan_open_index_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
     }
 
   /* attribute information of the index key */
-  if (heap_get_indexinfo_of_btid (thread_p, cls_oid, &indx_info->indx_id.i.btid, &isidp->bt_type, &isidp->bt_num_attrs,
+  if (heap_get_indexinfo_of_btid (thread_p, cls_oid, &indx_info->btid, &isidp->bt_type, &isidp->bt_num_attrs,
 				  &isidp->bt_attr_ids, &isidp->bt_attrs_prefix_length, NULL,
 				  &func_index_col_id) != NO_ERROR)
     {
@@ -3371,7 +3360,7 @@ scan_open_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
   scan_init_scan_id (scan_id, 1, S_SELECT, false, false, QPROC_NO_SINGLE_INNER, NULL, val_list, vd);
 
   /* read root_page page header info */
-  btid = &indx_info->indx_id.i.btid;
+  btid = &indx_info->btid;
 
   root_vpid.pageid = btid->root_pageid;
   root_vpid.volid = btid->vfid.volid;
@@ -3424,7 +3413,7 @@ scan_open_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
   bts->is_btid_int_valid = true;
 
   /* attribute information of the index key */
-  if (heap_get_indexinfo_of_btid (thread_p, cls_oid, &indx_info->indx_id.i.btid, &isidp->bt_type, &isidp->bt_num_attrs,
+  if (heap_get_indexinfo_of_btid (thread_p, cls_oid, &indx_info->btid, &isidp->bt_type, &isidp->bt_num_attrs,
 				  NULL, NULL, NULL, &func_index_col_id) != NO_ERROR)
     {
       goto exit_on_error;
@@ -3581,7 +3570,7 @@ scan_open_index_node_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
   BTREE_NODE_SCAN_INIT (&idx_nsid_p->btns);
 
   /* read root_page page header info */
-  btid = &indx_info->indx_id.i.btid;
+  btid = &indx_info->btid;
 
   root_vpid.pageid = btid->root_pageid;
   root_vpid.volid = btid->vfid.volid;
@@ -3959,7 +3948,7 @@ scan_start_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 	      /* initialize cache_recordinfo values */
 	      for (i = 0; i < HEAP_RECORD_INFO_COUNT; i++)
 		{
-		  DB_MAKE_NULL (hsidp->cache_recordinfo[i]);
+		  db_make_null (hsidp->cache_recordinfo[i]);
 		}
 	    }
 	  hsidp->caches_inited = true;
@@ -4091,7 +4080,7 @@ scan_start_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 	{
 	  for (i = 0; i < BTREE_KEY_INFO_COUNT; i++)
 	    {
-	      DB_MAKE_NULL (isidp->key_info_values[i]);
+	      db_make_null (isidp->key_info_values[i]);
 	    }
 	}
       isidp->caches_inited = true;
@@ -4107,7 +4096,7 @@ scan_start_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 	{
 	  for (i = 0; i < BTREE_NODE_INFO_COUNT; i++)
 	    {
-	      DB_MAKE_NULL (insidp->node_info_values[i]);
+	      db_make_null (insidp->node_info_values[i]);
 	    }
 	  insidp->caches_inited = true;
 	}
@@ -4150,7 +4139,7 @@ scan_start_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 
     case S_SET_SCAN:
       ssidp = &scan_id->s.ssid;
-      DB_MAKE_NULL (&ssidp->set);
+      db_make_null (&ssidp->set);
       break;
 
     case S_METHOD_SCAN:
@@ -4913,7 +4902,7 @@ scan_next_heap_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
   FILTER_INFO *p_range_filter = NULL, *p_key_filter = NULL;
   OID retry_oid;
   LOG_LSA ref_lsa;
-  int is_peeking;
+  bool is_peeking;
   OBJECT_GET_STATUS object_get_status;
   REGU_VARIABLE_LIST p;
 
@@ -5234,7 +5223,7 @@ scan_next_heap_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 		  return S_ERROR;
 		}
 
-	      if (is_peeking == PEEK && hsidp->scan_cache.page_watcher.pgptr != NULL
+	      if (is_peeking != 0 && hsidp->scan_cache.page_watcher.pgptr != NULL
 		  && pgbuf_page_has_changed (hsidp->scan_cache.page_watcher.pgptr, &ref_lsa))
 		{
 		  is_peeking = COPY;
@@ -5276,7 +5265,7 @@ scan_next_heap_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
  * thread_p (in) : Thread entry.
  * scan_id (in)	 : Scan data.
  */
-static int
+static SCAN_CODE
 scan_next_heap_page_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 {
   HEAP_PAGE_SCAN_ID *hpsidp = NULL;
@@ -5914,7 +5903,7 @@ scan_next_index_lookup_heap (THREAD_ENTRY * thread_p, SCAN_ID * scan_id, INDX_SC
 	}
 
       indx_infop = isidp->indx_info;
-      btid = &(indx_infop->indx_id.i.btid);
+      btid = &indx_infop->btid;
       indx_name_p = NULL;
       class_name_p = NULL;
 
@@ -6045,7 +6034,7 @@ scan_next_index_lookup_heap (THREAD_ENTRY * thread_p, SCAN_ID * scan_id, INDX_SC
  * thread_p (in) : Thread entry.
  * scan_id (in)  : Scan data.
  */
-static int
+static SCAN_CODE
 scan_next_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 {
   INDX_SCAN_ID *isidp = NULL;
@@ -6061,7 +6050,7 @@ scan_next_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
   while (true)
     {
       sp_scan =
-	btree_get_next_key_info (thread_p, &isidp->indx_info->indx_id.i.btid, &isidp->bt_scan, 1, &isidp->cls_oid,
+	btree_get_next_key_info (thread_p, &isidp->indx_info->btid, &isidp->bt_scan, 1, &isidp->cls_oid,
 				 isidp, isidp->key_info_values);
       if (sp_scan != S_SUCCESS)
 	{
@@ -6100,7 +6089,7 @@ scan_next_index_key_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
  * thread_p (in) : Thread entry.
  * scan_id (in)	 : Scan data.
  */
-static int
+static SCAN_CODE
 scan_next_index_node_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 {
   INDEX_NODE_SCAN_ID *insidp = NULL;
@@ -6115,9 +6104,7 @@ scan_next_index_node_info_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
 
   while (true)
     {
-      sp_scan =
-	btree_get_next_node_info (thread_p, &insidp->indx_info->indx_id.i.btid, &insidp->btns,
-				  insidp->node_info_values);
+      sp_scan = btree_get_next_node_info (thread_p, &insidp->indx_info->btid, &insidp->btns, insidp->node_info_values);
       if (sp_scan != S_SUCCESS)
 	{
 	  return (sp_scan == S_END) ? S_END : S_ERROR;

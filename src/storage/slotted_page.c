@@ -42,9 +42,11 @@
 #include "lock_free.h"
 #include "mvcc.h"
 #if defined(SERVER_MODE)
-#include "thread.h"
 #include "connection_error.h"
 #endif /* SERVER_MODE */
+#include "dbtype.h"
+#include "thread_entry.hpp"
+#include "thread_manager.hpp"	// for thread_get_thread_entry_info
 
 #if !defined(SERVER_MODE)
 #define pthread_mutex_init(a, b)
@@ -212,7 +214,7 @@ static INLINE SPAGE_SLOT *spage_find_slot (PAGE_PTR pgptr, SPAGE_HEADER * sphdr,
 static INLINE int spage_find_slot_for_insert (THREAD_ENTRY * thread_p, PAGE_PTR pgptr, RECDES * recdes,
 					      PGSLOTID * slotid, void **slotptr, int *used_space)
   __attribute__ ((ALWAYS_INLINE));
-static SCAN_CODE spage_get_record_data (PAGE_PTR pgptr, SPAGE_SLOT * sptr, RECDES * recdes, int ispeeking);
+static SCAN_CODE spage_get_record_data (PAGE_PTR pgptr, SPAGE_SLOT * sptr, RECDES * recdes, bool ispeeking);
 static bool spage_has_enough_total_space (THREAD_ENTRY * thread_p, PAGE_PTR pgptr, SPAGE_HEADER * sphdr, int space);
 static bool spage_has_enough_contiguous_space (THREAD_ENTRY * thread_p, PAGE_PTR pgptr, SPAGE_HEADER * sphdr,
 					       int space);
@@ -480,7 +482,7 @@ spage_save_space (THREAD_ENTRY * thread_p, SPAGE_HEADER * page_header_p, PAGE_PT
   if (VACUUM_IS_THREAD_VACUUM_WORKER (thread_p))
     {
       /* Vacuum workers do not rollback their heap changes and don't need to keep track of saved space. */
-      assert (VACUUM_WORKER_STATE_IS_EXECUTE (thread_p) || space < 0);
+      assert (vacuum_worker_state_is_execute (thread_p) || space < 0);
       return NO_ERROR;
     }
 
@@ -575,7 +577,7 @@ spage_save_space (THREAD_ENTRY * thread_p, SPAGE_HEADER * page_header_p, PAGE_PT
       /* Current transaction is not in the list */
 
       /* Need to allocate an entry */
-      entry_p = malloc (sizeof (*entry_p));
+      entry_p = (SPAGE_SAVE_ENTRY *) malloc (sizeof (*entry_p));
       if (entry_p == NULL)
 	{
 	  pthread_mutex_unlock (&head_p->mutex);
@@ -1225,7 +1227,7 @@ spage_compact (THREAD_ENTRY * thread_p, PAGE_PTR page_p)
       slot_p = spage_find_slot (page_p, page_header_p, 0, false);
       for (j = 0, i = 0; i < page_header_p->num_slots; slot_p--, i++)
 	{
-	  if (slot_p->record_type < REC_UNKNOWN || slot_p->record_type > REC_4BIT_USED_TYPE_MAX)
+	  if (slot_p->record_type > REC_4BIT_USED_TYPE_MAX)
 	    {
 	      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_GENERIC_ERROR, 0);
 	      assert_release (false);
@@ -3896,7 +3898,7 @@ spage_get_record (THREAD_ENTRY * thread_p, PAGE_PTR page_p, PGSLOTID slot_id, RE
  *   is_peeking(in):
  */
 static SCAN_CODE
-spage_get_record_data (PAGE_PTR page_p, SPAGE_SLOT * slot_p, RECDES * record_descriptor_p, int is_peeking)
+spage_get_record_data (PAGE_PTR page_p, SPAGE_SLOT * slot_p, RECDES * record_descriptor_p, bool is_peeking)
 {
   assert (page_p != NULL);
   assert (slot_p != NULL);
@@ -3931,7 +3933,7 @@ spage_get_record_data (PAGE_PTR page_p, SPAGE_SLOT * slot_p, RECDES * record_des
 	{
 	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_GENERIC_ERROR, 0);
 	  assert_release (false);
-	  return SP_ERROR;
+	  return S_ERROR;
 	}
       memcpy (record_descriptor_p->data, (char *) page_p + slot_p->offset_to_record, slot_p->record_length);
     }
@@ -4043,7 +4045,6 @@ spage_mark_deleted_slot_as_reusable (THREAD_ENTRY * thread_p, PAGE_PTR page_p, P
 {
   SPAGE_HEADER *page_header_p = NULL;
   SPAGE_SLOT *slot_p = NULL;
-  SPAGE_SLOT *first_slot_p = NULL;
 
   assert (page_p != NULL);
 
@@ -4466,7 +4467,7 @@ spage_check (THREAD_ENTRY * thread_p, PAGE_PTR page_p)
       snprintf (err_msg, sizeof (err_msg),
 		"spage_check: Inconsistent page = %d of volume = %s.\n"
 		" (cfree + foffset + SIZEOF(SPAGE_SLOT) * nslots) > "
-		" SPAGE_DB_PAGESIZE\n (%d + %d + (%d * %d)) > %d\n %d > %d\n", pgbuf_get_page_id (page_p),
+		" SPAGE_DB_PAGESIZE\n (%d + %d + (%zu * %d)) > %d\n %zu > %d\n", pgbuf_get_page_id (page_p),
 		pgbuf_get_volume_label (page_p), page_header_p->cont_free, page_header_p->offset_to_free_area,
 		sizeof (SPAGE_SLOT), page_header_p->num_slots, SPAGE_DB_PAGESIZE,
 		(page_header_p->cont_free + page_header_p->offset_to_free_area
@@ -4757,15 +4758,15 @@ spage_get_page_header_info (PAGE_PTR page_p, DB_VALUE ** page_header_info)
   page_header_p = (SPAGE_HEADER *) page_p;
   SPAGE_VERIFY_HEADER (page_header_p);
 
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_NUM_SLOTS], page_header_p->num_slots);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_NUM_RECORDS], page_header_p->num_records);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_ANCHOR_TYPE], page_header_p->anchor_type);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_ALIGNMENT], page_header_p->alignment);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_TOTAL_FREE], page_header_p->total_free);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_CONT_FREE], page_header_p->cont_free);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_OFFSET_TO_FREE_AREA], page_header_p->offset_to_free_area);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_IS_SAVING], page_header_p->is_saving);
-  DB_MAKE_INT (page_header_info[HEAP_PAGE_INFO_UPDATE_BEST], page_header_p->need_update_best_hint);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_NUM_SLOTS], page_header_p->num_slots);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_NUM_RECORDS], page_header_p->num_records);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_ANCHOR_TYPE], page_header_p->anchor_type);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_ALIGNMENT], page_header_p->alignment);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_TOTAL_FREE], page_header_p->total_free);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_CONT_FREE], page_header_p->cont_free);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_OFFSET_TO_FREE_AREA], page_header_p->offset_to_free_area);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_IS_SAVING], page_header_p->is_saving);
+  db_make_int (page_header_info[HEAP_PAGE_INFO_UPDATE_BEST], page_header_p->need_update_best_hint);
 
   return S_SUCCESS;
 }
@@ -5026,10 +5027,10 @@ spage_header_next_scan (THREAD_ENTRY * thread_p, int cursor, DB_VALUE ** out_val
   db_make_int (out_values[idx], header->num_records);
   idx++;
 
-  db_make_string (out_values[idx], spage_anchor_flag_string (header->anchor_type));
+  db_make_string_by_const_str (out_values[idx], spage_anchor_flag_string (header->anchor_type));
   idx++;
 
-  db_make_string (out_values[idx], spage_alignment_string (header->alignment));
+  db_make_string_by_const_str (out_values[idx], spage_alignment_string (header->alignment));
   idx++;
 
   db_make_int (out_values[idx], header->total_free);
@@ -5214,7 +5215,7 @@ spage_slots_next_scan (THREAD_ENTRY * thread_p, int cursor, DB_VALUE ** out_valu
   db_make_int (out_values[idx], ctx->slot->offset_to_record);
   idx++;
 
-  db_make_string (out_values[idx], spage_record_type_string (ctx->slot->record_type));
+  db_make_string_by_const_str (out_values[idx], spage_record_type_string (ctx->slot->record_type));
   idx++;
 
   db_make_int (out_values[idx], ctx->slot->record_length);

@@ -922,7 +922,7 @@ $ LOADDB
 853 Für ein Objekt (%1$d|%2$d|%3$d), Transaktion (%4$d) der Uncommitted-Read verursachte die Störabschaltung (%5$s).
 854 WARNING: Kein Sperrhalter, jedoch Sperrwarter existieren. Beziehen Sie sich auf %1$s.
 855 WARNING: Zwei oder mehrere Threads sperrwarten für eine Transaktion (%1$d).
-856 WARNING: Seltsamer LOCKWAIT Status (%1$d|%2$d), Thread (%3$d|%4$d) und Transaktion (%5$d).
+856 WARNING: Seltsamer LOCKWAIT Status (%1$d|%2$d), Thread (%3$d|%4$lld) und Transaktion (%5$d).
 857 Ein I/O-Fehler ist beim Abschneiden der Seite %1$d des Datenträgers "%2$s" aufgetreten.
 858 Datenträger "%1$s" ist unbekannt nach Serverneustart.
 859 LATCH ON PAGE(%1$d|%2$d) ABORTED
@@ -1263,7 +1263,27 @@ $ LOADDB
 1194 Die Datei konnte nicht überprüft werden %1$d|%2$d Weil Sperre auf class %3$d|%4$d|%5$d Wird nicht sofort gewährt.
 1195 Der rekursive Teil eines CTE sollte keine aggregierten Funktionen ohne GROUP BY-Klausel enthalten.
 1196 Maximale Rekursionen %1$d erreichte die Ausführung von CTE.
-1197 Letzter Fehler
+1197 Invalid json: %1$s (%2$d)
+1198 A json object must be provided
+1199 The provided JSON has been invalidated by the JSON schema (Invalid schema path: %1$s, Keyword: %2$s, Invalid provided JSON path: %3$s)
+1200 Invalid JSON path
+1201 Json object name cannot be NULL.
+1202 Json PATH "%1$s" does not exist in %2$s
+1203 Invalid JSON type at path %1$s. Expected %2$s, but found %3$s.
+1204 Json KEY "%1$s" is duplicate
+1205 Reserved error for JSON.
+1206 Reserved error for JSON.
+1207 Reserved error for JSON.
+1208 Reserved error for JSON.
+1209 Reserved error for JSON.
+1210 Reserved error for JSON.
+1211 Reserved error for JSON.
+1212 Reserved error for JSON.
+1213 Reserved error for JSON.
+1214 Reserved error for JSON.
+
+1215 Letzter Fehler
+
 $set 6 MSGCAT_SET_INTERNAL
 1 Fehler in Fehler-Subsystem (Zeile %1$d):
 2 Keine Fehlermeldung vorhanden.

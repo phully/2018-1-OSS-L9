@@ -40,9 +40,7 @@
 #include "network_interface_cl.h"
 #include "execute_statement.h"
 #include "transaction_cl.h"
-
-/* this must be the last header file included!!! */
-#include "dbval.h"
+#include "dbtype.h"
 
 typedef struct trigger_exec_info TRIGGER_EXEC_INFO;
 struct trigger_exec_info
@@ -433,7 +431,6 @@ PT_NODE *
 pt_class_pre_fetch (PARSER_CONTEXT * parser, PT_NODE * statement)
 {
   PT_CLASS_LOCKS lcks;
-  int error = NO_ERROR;
   PT_NODE *node = NULL;
   LOCK lock_rr_tran = NULL_LOCK;
   LC_FIND_CLASSNAME find_result;
@@ -734,7 +731,7 @@ pt_add_lock_class (PARSER_CONTEXT * parser, PT_CLASS_LOCKS * lcks, PT_NODE * spe
     }
 
   /* need to lowercase the class name so that the lock manager can find it. */
-  len = strlen (spec->info.spec.entity_name->info.name.original);
+  len = (int) strlen (spec->info.spec.entity_name->info.name.original);
   /* parser->lcks_classes[n] will be freed at parser_free_parser() */
   lcks->classes[lcks->num_classes] = (char *) calloc (1, len + 1);
   if (lcks->classes[lcks->num_classes] == NULL)
@@ -928,7 +925,7 @@ pt_in_lck_array (PT_CLASS_LOCKS * lcks, const char *str, LC_PREFETCH_FLAGS flags
 	    }
 	  else if (flags & LC_PREF_FLAG_COUNT_OPTIM)
 	    {
-	      lcks->flags[i] |= LC_PREF_FLAG_COUNT_OPTIM;
+	      lcks->flags[i] = (LC_PREFETCH_FLAGS) (lcks->flags[i] | LC_PREF_FLAG_COUNT_OPTIM);
 	      return true;
 	    }
 	}
@@ -936,7 +933,7 @@ pt_in_lck_array (PT_CLASS_LOCKS * lcks, const char *str, LC_PREFETCH_FLAGS flags
   if (no_lock_idx >= 0)
     {
       lcks->locks[no_lock_idx] = chk_lock;
-      lcks->flags[no_lock_idx] |= LC_PREF_FLAG_LOCK;
+      lcks->flags[no_lock_idx] = (LC_PREFETCH_FLAGS) (lcks->flags[no_lock_idx] | LC_PREF_FLAG_LOCK);
       return true;
     }
 
@@ -970,20 +967,20 @@ remove_appended_trigger_info (char *msg, int with_evaluate)
       p = strstr (msg, eval_prefix);
       if (p != NULL)
 	{
-	  p = memmove (p, p + strlen (eval_prefix), strlen (p) - strlen (eval_prefix) + 1);
+	  p = (char *) memmove (p, p + strlen (eval_prefix), strlen (p) - strlen (eval_prefix) + 1);
 	}
 
       p = strstr (msg, eval_suffix);
       if (p != NULL)
 	{
-	  p = memmove (p, p + strlen (eval_suffix), strlen (p) - strlen (eval_suffix) + 1);
+	  p = (char *) memmove (p, p + strlen (eval_suffix), strlen (p) - strlen (eval_suffix) + 1);
 	}
     }
 
   p = strstr (msg, scope_str);
   if (p != NULL)
     {
-      p = memmove (p, p + strlen (scope_str), strlen (p) - strlen (scope_str) + 1);
+      p = (char *) memmove (p, p + strlen (scope_str), strlen (p) - strlen (scope_str) + 1);
     }
 
   p = strstr (msg, from_on_str);
@@ -994,7 +991,7 @@ remove_appended_trigger_info (char *msg, int with_evaluate)
 
       if (i > 0 && p[i - 1] == semicolon)
 	{
-	  p = memmove (p, p + i, strlen (p) - i + 1);
+	  p = (char *) memmove (p, p + i, strlen (p) - i + 1);
 	}
     }
 }
@@ -1149,8 +1146,6 @@ pt_compile_trigger_stmt (PARSER_CONTEXT * parser, const char *trigger_stmt, DB_O
   if (statement != NULL && statement->info.scope.stmt->info.trigger_action.expression != NULL
       && statement->info.scope.stmt->info.trigger_action.expression->node_type == PT_DELETE)
     {
-      PT_NODE *node = NULL, *prev = NULL;
-
       if (pt_split_delete_stmt (parser, statement->info.scope.stmt->info.trigger_action.expression) != NO_ERROR)
 	{
 	  return NULL;

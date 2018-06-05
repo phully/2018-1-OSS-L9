@@ -29,24 +29,18 @@
 #include <string.h>
 #include <math.h>
 
-#include "xserver_interface.h"
-#include "memory_alloc.h"
 #include "statistics_sr.h"
-#include "object_representation.h"
-#include "error_manager.h"
-#include "storage_common.h"
-#include "system_catalog.h"
 #include "btree.h"
-#include "extendible_hash.h"
 #include "heap_file.h"
 #include "boot_sr.h"
-#include "partition.h"
-#include "db.h"
+#include "partition_sr.h"
+#include "object_primitive.h"
+#include "thread_entry.hpp"
 
 #define SQUARE(n) ((n)*(n))
 
 /* Used by the "stats_update_all_statistics" routine to create the list of all
-   classes from the extendible hashing directory used by the catalog manager. */
+   classes from the extensible hashing directory used by the catalog manager. */
 typedef struct class_id_list CLASS_ID_LIST;
 struct class_id_list
 {
@@ -119,15 +113,10 @@ xstats_update_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, bool with_f
   int i, j;
   OID *partitions = NULL;
   int count = 0, error_code = NO_ERROR;
-#if !defined(NDEBUG)
-  int track_id;
-#endif
   int lk_grant_code = 0;
   CATALOG_ACCESS_INFO catalog_access_info = CATALOG_ACCESS_INFO_INITIALIZER;
 
-#if !defined(NDEBUG)
-  track_id = thread_rc_track_enter (thread_p);
-#endif
+  thread_p->push_resource_tracks ();
 
   OID_SET_NULL (&dir_oid);
 
@@ -135,12 +124,7 @@ xstats_update_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, bool with_f
     {
       /* something wrong. give up. */
       ASSERT_ERROR_AND_SET (error_code);
-#if !defined(NDEBUG)
-      if (thread_rc_track_exit (thread_p, track_id) != NO_ERROR)
-	{
-	  assert_release (false);
-	}
-#endif
+      thread_p->pop_resource_tracks ();
 
       return error_code;
     }
@@ -341,12 +325,7 @@ end:
       free_and_init (class_name);
     }
 
-#if !defined(NDEBUG)
-  if (thread_rc_track_exit (thread_p, track_id) != NO_ERROR)
-    {
-      assert_release (false);
-    }
-#endif
+  thread_p->pop_resource_tracks ();
 
   return error_code;
 
@@ -472,18 +451,13 @@ xstats_get_statistics_from_server (THREAD_ENTRY * thread_p, OID * class_id_p, un
   char *buf_p, *start_p;
   int key_size;
   int lk_grant_code;
-#if !defined(NDEBUG)
-  int track_id;
-#endif
   CATALOG_ACCESS_INFO catalog_access_info = CATALOG_ACCESS_INFO_INITIALIZER;
 
   /* init */
   cls_info_p = NULL;
   disk_repr_p = NULL;
 
-#if !defined(NDEBUG)
-  track_id = thread_rc_track_enter (thread_p);
-#endif
+  thread_p->push_resource_tracks ();
 
   *length_p = -1;
 
@@ -796,12 +770,7 @@ xstats_get_statistics_from_server (THREAD_ENTRY * thread_p, OID * class_id_p, un
 
   *length_p = CAST_STRLEN (buf_p - start_p);
 
-#if !defined(NDEBUG)
-  if (thread_rc_track_exit (thread_p, track_id) != NO_ERROR)
-    {
-      assert_release (false);
-    }
-#endif
+  thread_p->pop_resource_tracks ();
 
   return start_p;
 
@@ -821,12 +790,7 @@ exit_on_error:
       catalog_free_class_info_and_init (cls_info_p);
     }
 
-#if !defined(NDEBUG)
-  if (thread_rc_track_exit (thread_p, track_id) != NO_ERROR)
-    {
-      assert_release (false);
-    }
-#endif
+  thread_p->pop_resource_tracks ();
 
   return NULL;
 }
@@ -991,7 +955,7 @@ stats_compare_data (DB_DATA * data1_p, DB_DATA * data2_p, DB_TYPE type)
       status = stats_compare_time (&data1_p->timetz.time, &data2_p->timetz.time);
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
     case DB_TYPE_TIMESTAMPLTZ:
       status = stats_compare_utime (&data1_p->utime, &data2_p->utime);
       break;
@@ -1100,6 +1064,10 @@ stats_dump_class_statistics (CLASS_STATS * class_stats, FILE * fpp)
 	  fprintf (fpp, "DB_TYPE_SET \n");
 	  break;
 
+	case DB_TYPE_JSON:
+	  fprintf (fpp, "DB_TYPE_JSON \n");
+	  break;
+
 	case DB_TYPE_MULTISET:
 	  fprintf (fpp, "DB_TYPE_MULTISET \n");
 	  break;
@@ -1120,8 +1088,8 @@ stats_dump_class_statistics (CLASS_STATS * class_stats, FILE * fpp)
 	  fprintf (fpp, "DB_TYPE_TIMETZ \n");
 	  break;
 
-	case DB_TYPE_UTIME:
-	  fprintf (fpp, "DB_TYPE_UTIME \n");
+	case DB_TYPE_TIMESTAMP:
+	  fprintf (fpp, "DB_TYPE_TIMESTAMP \n");
 	  break;
 
 	case DB_TYPE_TIMESTAMPLTZ:
@@ -1232,8 +1200,7 @@ stats_dump_class_statistics (CLASS_STATS * class_stats, FILE * fpp)
 #endif /* CUBRID_DEBUG */
 
 /*
- * stats_update_partitioned_statistics () - compute statistics for a
- *						  partitioned class
+ * stats_update_partitioned_statistics () - compute statistics for a partitioned class
  * return : error code or NO_ERROR
  * thread_p (in) :
  * class_id_p (in) : oid of the partitioned class
@@ -1265,7 +1232,6 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
   REPR_ID repr_id = NULL_REPRID, subcls_repr_id = NULL_REPRID;
   DISK_ATTR *disk_attr_p = NULL, *subcls_attr_p = NULL;
   BTREE_STATS *btree_stats_p = NULL;
-  BTREE_STATS *computed_stats = NULL;
   int n_btrees = 0;
   PARTITION_STATS_ACUMULATOR *mean = NULL, *stddev = NULL;
   OR_CLASSREP *cls_rep = NULL;
@@ -1469,8 +1435,8 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
 	  goto cleanup;
 	}
 
-      subcls_disk_rep =
-	catalog_get_representation (thread_p, &partitions[i], subcls_repr_id, &part_catalog_access_info);
+      subcls_disk_rep = catalog_get_representation (thread_p, &partitions[i], subcls_repr_id,
+						    &part_catalog_access_info);
       if (subcls_disk_rep == NULL)
 	{
 	  ASSERT_ERROR_AND_SET (error);
@@ -1514,9 +1480,10 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
 
 	  for (k = 0, btree_stats_p = disk_attr_p->bt_stats; k < disk_attr_p->n_btstats; k++, btree_stats_p++)
 	    {
-	      const BTREE_STATS *subcls_stats = stats_find_inherited_index_stats (cls_rep, subcls_rep,
-										  subcls_attr_p,
-										  &btree_stats_p->btid);
+	      const BTREE_STATS *subcls_stats;
+
+	      subcls_stats = stats_find_inherited_index_stats (cls_rep, subcls_rep, subcls_attr_p,
+							       &btree_stats_p->btid);
 	      if (subcls_stats == NULL)
 		{
 		  error = ER_FAILED;
@@ -1563,7 +1530,6 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
   for (i = 0; i < partitions_count; i++)
     {
       OID part_dir_oid;
-      bool part_need_unlock = false;
 
       /* clean subclass loaded in previous iteration */
       if (subcls_disk_rep != NULL)
@@ -1596,8 +1562,8 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
 	  goto cleanup;
 	}
 
-      subcls_disk_rep =
-	catalog_get_representation (thread_p, &partitions[i], subcls_repr_id, &part_catalog_access_info);
+      subcls_disk_rep = catalog_get_representation (thread_p, &partitions[i], subcls_repr_id,
+						    &part_catalog_access_info);
       if (subcls_disk_rep == NULL)
 	{
 	  ASSERT_ERROR_AND_SET (error);
@@ -1640,9 +1606,10 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
 
 	  for (k = 0, btree_stats_p = disk_attr_p->bt_stats; k < disk_attr_p->n_btstats; k++, btree_stats_p++)
 	    {
-	      const BTREE_STATS *subcls_stats = stats_find_inherited_index_stats (cls_rep, subcls_rep,
-										  subcls_attr_p,
-										  &btree_stats_p->btid);
+	      const BTREE_STATS *subcls_stats;
+
+	      subcls_stats = stats_find_inherited_index_stats (cls_rep, subcls_rep, subcls_attr_p,
+							       &btree_stats_p->btid);
 	      if (subcls_stats == NULL)
 		{
 		  error = ER_FAILED;
@@ -1742,9 +1709,8 @@ stats_update_partitioned_statistics (THREAD_ENTRY * thread_p, OID * class_id_p, 
 
   /* replace the current disk representation structure/information in the catalog with the newly computed statistics */
   assert (!OID_ISNULL (&(cls_info_p->ci_rep_dir)));
-  error =
-    catalog_add_representation (thread_p, class_id_p, repr_id, disk_repr_p, &(cls_info_p->ci_rep_dir),
-				&catalog_access_info);
+  error = catalog_add_representation (thread_p, class_id_p, repr_id, disk_repr_p, &(cls_info_p->ci_rep_dir),
+				      &catalog_access_info);
   if (error != NO_ERROR)
     {
       goto cleanup;
@@ -1809,9 +1775,7 @@ cleanup:
 }
 
 /*
- * stats_find_inherited_index_stats () - find the btree statistics
- *					 corresponding to an index in a
- *					 subclass
+ * stats_find_inherited_index_stats () - find the btree statistics corresponding to an index in a subclass
  * return : btree statistics
  * cls_rep (in)	   : superclass representation
  * subcls_rep (in) : subclass representation

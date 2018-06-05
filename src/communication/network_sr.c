@@ -27,6 +27,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #if defined(CS_MODE)
 #include "server_interface.h"
@@ -39,21 +40,24 @@
 #include "boot_sr.h"
 #include "network_interface_sr.h"
 #include "query_list.h"
-#include "thread.h"
 #include "critical_section.h"
 #include "release_string.h"
 #include "server_support.h"
 #include "connection_sr.h"
-#include "job_queue.h"
 #include "connection_error.h"
 #include "message_catalog.h"
 #include "log_impl.h"
 #include "perf_monitor.h"
 #include "event_log.h"
 #include "util_func.h"
-#if defined(WINDOWS)
+#include "tz_support.h"
+#if !defined(WINDOWS)
+#include "tcp.h"
+#else /* WINDOWS */
 #include "wintcp.h"
-#endif /* WINDOWS */
+#endif
+#include "thread_entry.hpp"
+#include "thread_manager.hpp"
 
 enum net_req_act
 {
@@ -789,14 +793,6 @@ net_server_init (void)
   req_p->processing_function = sbtree_find_multi_uniques;
   req_p->name = "NET_SERVER_FIND_MULTI_UNIQUES";
 
-  req_p = &net_Requests[NET_SERVER_LC_PREFETCH_REPL_INSERT];
-  req_p->processing_function = slocator_prefetch_repl_insert;
-  req_p->name = "NET_SERVER_LC_PREFETCH_PAGE_REPL_INSERT";
-
-  req_p = &net_Requests[NET_SERVER_LC_PREFETCH_REPL_UPDATE_OR_DELETE];
-  req_p->processing_function = slocator_prefetch_repl_update_or_delete;
-  req_p->name = "NET_SERVER_LC_PREFETCH_PAGE_REPL_UPDATE_OR_DELETE";
-
   req_p = &net_Requests[NET_SERVER_CSS_KILL_OR_INTERRUPT_TRANSACTION];
   req_p->processing_function = sthread_kill_or_interrupt_tran;
   req_p->name = "NET_SERVER_CSS_KILL_OR_INTERRUPT_TRANSACTION";
@@ -925,12 +921,6 @@ net_server_request (THREAD_ENTRY * thread_p, unsigned int rid, int request, int 
   int status = CSS_NO_ERRORS;
   int error_code;
   CSS_CONN_ENTRY *conn;
-#if !defined(NDEBUG)
-  int track_id;
-#endif
-#if defined (DIAG_DEVEL)
-  struct timeval diag_start_time, diag_end_time, diag_elapsed_time;
-#endif /* DIAG_DEVEL */
 
   if (buffer == NULL && size > 0)
     {
@@ -1012,13 +1002,6 @@ net_server_request (THREAD_ENTRY * thread_p, unsigned int rid, int request, int 
 	  goto end;
 	}
     }
-#if defined (DIAG_DEVEL)
-  if (net_Requests[request].action_attribute & SET_DIAGNOSTICS_INFO)
-    {
-      SET_DIAG_VALUE (diag_executediag, DIAG_OBJ_TYPE_CONN_CLI_REQUEST, 1, DIAG_VAL_SETTYPE_INC, NULL);
-      gettimeofday (&diag_start_time, NULL);
-    }
-#endif /* DIAG_DEVEL */
   if (net_Requests[request].action_attribute & IN_TRANSACTION)
     {
       conn->in_transaction = true;
@@ -1033,9 +1016,7 @@ net_server_request (THREAD_ENTRY * thread_p, unsigned int rid, int request, int 
   assert (func != NULL);
   if (func)
     {
-#if !defined(NDEBUG)
-      track_id = thread_rc_track_enter (thread_p);
-#endif
+      thread_p->push_resource_tracks ();
 
       if (conn->invalidate_snapshot != 0)
 	{
@@ -1043,29 +1024,13 @@ net_server_request (THREAD_ENTRY * thread_p, unsigned int rid, int request, int 
 	}
       (*func) (thread_p, rid, buffer, size);
 
-#if !defined(NDEBUG)
-      if (thread_rc_track_exit (thread_p, track_id) != NO_ERROR)
-	{
-	  assert_release (false);
-	}
-#endif
+      thread_p->pop_resource_tracks ();
 
       /* defence code: let other threads continue. */
       pgbuf_unfix_all (thread_p);
     }
 
   /* check the defined action attribute */
-#if defined (DIAG_DEVEL)
-  if (net_Requests[request].action_attribute & SET_DIAGNOSTICS_INFO)
-    {
-      gettimeofday (&diag_end_time, NULL);
-      DIFF_TIMEVAL (diag_start_time, diag_end_time, diag_elapsed_time);
-      if (request == NET_SERVER_QM_QUERY_EXECUTE || request == NET_SERVER_QM_QUERY_PREPARE_AND_EXECUTE)
-	{
-	  SET_DIAG_VALUE_SLOW_QUERY (diag_executediag, diag_start_time, diag_end_time, 1, DIAG_VAL_SETTYPE_INC, NULL);
-	}
-    }
-#endif /* DIAG_DEVEL */
   if (net_Requests[request].action_attribute & OUT_TRANSACTION)
     {
       conn->in_transaction = false;
@@ -1094,7 +1059,7 @@ net_server_conn_down (THREAD_ENTRY * thread_p, CSS_THREAD_ARG arg)
 {
   int tran_index;
   CSS_CONN_ENTRY *conn_p;
-  int prev_thrd_cnt, thrd_cnt;
+  size_t prev_thrd_cnt, thrd_cnt;
   bool continue_check;
   int client_id;
   int local_tran_index;
@@ -1112,26 +1077,26 @@ net_server_conn_down (THREAD_ENTRY * thread_p, CSS_THREAD_ARG arg)
   local_tran_index = thread_p->tran_index;
 
   conn_p = (CSS_CONN_ENTRY *) arg;
-  tran_index = conn_p->transaction_id;
+  tran_index = conn_p->get_tran_index ();
   client_id = conn_p->client_id;
 
-  thread_set_info (thread_p, client_id, 0, tran_index, NET_SERVER_SHUTDOWN);
+  css_set_thread_info (thread_p, client_id, 0, tran_index, NET_SERVER_SHUTDOWN);
   pthread_mutex_unlock (&thread_p->tran_index_lock);
 
   css_end_server_request (conn_p);
 
   /* avoid infinite waiting with xtran_wait_server_active_trans() */
-  thread_p->status = TS_CHECK;
+  thread_p->m_status = cubthread::entry::status::TS_CHECK;
 
 loop:
-  prev_thrd_cnt = thread_has_threads (thread_p, tran_index, client_id);
+  prev_thrd_cnt = css_count_transaction_worker_threads (thread_p, tran_index, client_id);
   if (prev_thrd_cnt > 0)
     {
       if (tran_index == NULL_TRAN_INDEX)
 	{
 	  /* the connected client does not yet finished boot_client_register */
 	  thread_sleep (50);	/* 50 msec */
-	  tran_index = conn_p->transaction_id;
+	  tran_index = conn_p->get_tran_index ();
 	}
       if (!logtb_is_interrupted_tran (thread_p, false, &continue_check, tran_index))
 	{
@@ -1141,17 +1106,12 @@ loop:
       /* never try to wake non TRAN_ACTIVE state trans. note that non-TRAN_ACTIVE trans will not be interrupted. */
       if (logtb_is_interrupted_tran (thread_p, false, &continue_check, tran_index))
 	{
-	  suspended_p = thread_find_entry_by_tran_index_except_me (tran_index);
+	  suspended_p = logtb_find_thread_by_tran_index_except_me (tran_index);
 	  if (suspended_p != NULL)
 	    {
-	      int r;
 	      bool wakeup_now = false;
 
-	      r = thread_lock_entry (suspended_p);
-	      if (r != NO_ERROR)
-		{
-		  return r;
-		}
+	      thread_lock_entry (suspended_p);
 
 	      if (suspended_p->check_interrupt)
 		{
@@ -1198,19 +1158,15 @@ loop:
 
 	      if (wakeup_now == true)
 		{
-		  r = thread_wakeup_already_had_mutex (suspended_p, THREAD_RESUME_DUE_TO_INTERRUPT);
+		  thread_wakeup_already_had_mutex (suspended_p, THREAD_RESUME_DUE_TO_INTERRUPT);
 		}
-	      r = thread_unlock_entry (suspended_p);
-
-	      if (r != NO_ERROR)
-		{
-		  return r;
-		}
+	      thread_unlock_entry (suspended_p);
 	    }
 	}
     }
 
-  while ((thrd_cnt = thread_has_threads (thread_p, tran_index, client_id)) >= prev_thrd_cnt && thrd_cnt > 0)
+  while ((thrd_cnt = css_count_transaction_worker_threads (thread_p, tran_index, client_id)) >= prev_thrd_cnt
+	 && thrd_cnt > 0)
     {
       /* Some threads may wait for data from the m-driver. It's possible from the fact that css_server_thread() is
        * responsible for receiving every data from which is sent by a client and all m-drivers. We must have chance to
@@ -1231,8 +1187,8 @@ loop:
     }
   css_free_conn (conn_p);
 
-  thread_set_info (thread_p, -1, 0, local_tran_index, -1);
-  thread_p->status = TS_RUN;
+  css_set_thread_info (thread_p, -1, 0, local_tran_index, -1);
+  thread_p->m_status = cubthread::entry::status::TS_RUN;
 
   return NO_ERROR;
 }
@@ -1250,6 +1206,17 @@ net_server_start (const char *server_name)
   char *packed_name;
   int r, status = 0;
   CHECK_ARGS check_coll_and_timezone = { true, true };
+  THREAD_ENTRY *thread_p = NULL;
+
+  if (er_init (NULL, ER_NEVER_EXIT) != NO_ERROR)
+    {
+      PRINT_AND_LOG_ERR_MSG ("Failed to initialize error manager\n");
+      status = -1;
+      goto end;
+    }
+
+  cubthread::initialize (thread_p);
+  assert (thread_p == thread_get_thread_entry_info ());
 
 #if defined(WINDOWS)
   if (css_windows_startup () < 0)
@@ -1289,14 +1256,12 @@ net_server_start (const char *server_name)
       status = -1;
       goto end;
     }
-  if (thread_initialize_manager () != NO_ERROR)
-    {
-      PRINT_AND_LOG_ERR_MSG ("Failed to initialize thread manager\n");
-      status = -1;
-      goto end;
-    }
 
-  if (er_init (prm_get_string_value (PRM_ID_ER_LOG_FILE), prm_get_integer_value (PRM_ID_ER_EXIT_ASK)) != NO_ERROR)
+  // we already initialize er_init with default values, we'll reload again after loading database parameters
+  // this call looks unnecessary.
+  // we can either remove this completely, or we can add an er_update to check if parameters are changed and do
+  // whatever is necessary
+  if (er_init (NULL, prm_get_integer_value (PRM_ID_ER_EXIT_ASK)) != NO_ERROR)
     {
       PRINT_AND_LOG_ERR_MSG ("Failed to initialize error manager\n");
       status = -1;
@@ -1309,8 +1274,7 @@ net_server_start (const char *server_name)
   net_server_init ();
   css_initialize_server_interfaces (net_server_request, net_server_conn_down);
 
-  if (boot_restart_server (thread_get_thread_entry_info (), true, server_name, false, &check_coll_and_timezone,
-			   NULL) != NO_ERROR)
+  if (boot_restart_server (thread_p, true, server_name, false, &check_coll_and_timezone, NULL) != NO_ERROR)
     {
       assert (er_errid () != NO_ERROR);
       error = er_errid ();
@@ -1318,9 +1282,8 @@ net_server_start (const char *server_name)
   else
     {
       packed_name = css_pack_server_name (server_name, &name_length);
-      css_init_job_queue ();
 
-      r = css_init (packed_name, name_length, prm_get_integer_value (PRM_ID_TCP_PORT_ID));
+      r = css_init (thread_p, packed_name, name_length, prm_get_integer_value (PRM_ID_TCP_PORT_ID));
       free_and_init (packed_name);
 
       if (r < 0)
@@ -1334,19 +1297,17 @@ net_server_start (const char *server_name)
 	      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, error, 0);
 	    }
 
-	  xboot_shutdown_server (thread_get_thread_entry_info (), ER_THREAD_FINAL);
+	  xboot_shutdown_server (thread_p, ER_THREAD_FINAL);
 	}
       else
 	{
-	  (void) xboot_shutdown_server (thread_get_thread_entry_info (), ER_ALL_FINAL);
+	  (void) xboot_shutdown_server (thread_p, ER_THREAD_FINAL);
 	}
 
 #if defined(CUBRID_DEBUG)
       net_server_histo_print ();
 #endif /* CUBRID_DEBUG */
 
-      thread_kill_all_workers ();
-      css_final_job_queue ();
       css_final_conn_list ();
       css_free_user_access_status ();
     }
@@ -1358,7 +1319,8 @@ net_server_start (const char *server_name)
       status = 2;
     }
 
-  thread_final_manager ();
+  cubthread::finalize ();
+  er_final (ER_ALL_FINAL);
   csect_finalize_static_critical_sections ();
   (void) sync_finalize_sync_stats ();
 

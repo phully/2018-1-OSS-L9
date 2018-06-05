@@ -45,16 +45,12 @@
 #if defined(ENABLE_SYSTEMTAP)
 #include "probes.h"
 #endif /* ENABLE_SYSTEMTAP */
-
 #if defined(SERVER_MODE)
 #include "connection_error.h"
-#include "thread.h"
-#include "job_queue.h"
 #endif /* SERVER_MODE */
-
-#if !defined (SERVER_MODE)
-#include "transaction_cl.h"
-#endif
+#include "server_support.h"
+#include "thread_entry_task.hpp"
+#include "thread_manager.hpp"	// for thread_get_thread_entry_info and thread_sleep
 
 /* Estimate on number of pages in the multipage temporary file */
 #define SORT_MULTIPAGE_FILE_SIZE_ESTIMATE  20
@@ -289,7 +285,7 @@ static void sort_spage_initialize (PAGE_PTR pgptr, INT16 slots_type, INT16 align
 
 static INT16 sort_spage_get_numrecs (PAGE_PTR pgptr);
 static INT16 sort_spage_insert (PAGE_PTR pgptr, RECDES * recdes);
-static SCAN_CODE sort_spage_get_record (PAGE_PTR pgptr, INT16 slotid, RECDES * recdes, int peek_p);
+static SCAN_CODE sort_spage_get_record (PAGE_PTR pgptr, INT16 slotid, RECDES * recdes, bool peek_p);
 static int sort_spage_offsetcmp (const void *s1, const void *s2);
 static int sort_spage_compact (PAGE_PTR pgptr);
 static INT16 sort_spage_find_free (PAGE_PTR pgptr, SLOT ** sptr, INT16 length, INT16 type, INT16 * space);
@@ -635,7 +631,7 @@ sort_spage_insert (PAGE_PTR pgptr, RECDES * recdes)
  *       return value.
  */
 static SCAN_CODE
-sort_spage_get_record (PAGE_PTR pgptr, INT16 slotid, RECDES * recdes, int peek_p)
+sort_spage_get_record (PAGE_PTR pgptr, INT16 slotid, RECDES * recdes, bool peek_p)
 {
   SLOTTED_PAGE_HEADER *sphdr;
   SLOT *sptr;
@@ -1484,10 +1480,10 @@ sort_listfile (THREAD_ENTRY * thread_p, INT16 volid, int est_inp_pg_cnt, SORT_GE
        * NEED MORE CONSIDERATION */
       num_cpus = fileio_os_sysconf ();
 
-      sort_param->px_height_max = (int) sqrt (num_cpus);	/* n */
+      sort_param->px_height_max = (int) sqrt ((double) num_cpus);	/* n */
       sort_param->px_array_size = num_cpus;	/* 2^^n */
 
-      assert_release (sort_param->px_array_size == pow (2, sort_param->px_height_max));
+      assert_release (sort_param->px_array_size == pow ((double) 2, (double) sort_param->px_height_max));
     }
 #endif /* SERVER_MODE */
 
@@ -1685,6 +1681,28 @@ px_sort_assign (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param, int px_id, cha
 }
 
 #if defined(SERVER_MODE)
+// *INDENT-OFF*
+class px_sort_myself_task : public cubthread::entry_task
+{
+public:
+  px_sort_myself_task (void) = delete;
+
+  px_sort_myself_task (PX_TREE_NODE *node)
+  : m_px_node (node)
+  {
+  }
+
+  void
+  execute (context_type &thread_ref) override final
+  {
+    (void) px_sort_myself (&thread_ref, m_px_node);
+  }
+
+private:
+  PX_TREE_NODE *m_px_node;
+};
+// *INDENT-ON*
+
 /*
  * px_sort_communicate() -
  *   return:
@@ -1696,11 +1714,7 @@ px_sort_assign (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param, int px_id, cha
 static int
 px_sort_communicate (THREAD_ENTRY * thread_p, PX_TREE_NODE * px_node)
 {
-  int ret = NO_ERROR;
   SORT_PARAM *sort_param;
-  CSS_CONN_ENTRY *conn_p;
-  int conn_index;
-  CSS_JOB_ENTRY *job_entry_p;
 
   assert_release (px_node != NULL);
   assert_release (px_node->px_arg != NULL);
@@ -1708,26 +1722,11 @@ px_sort_communicate (THREAD_ENTRY * thread_p, PX_TREE_NODE * px_node)
   sort_param = (SORT_PARAM *) (px_node->px_arg);
   assert_release (px_node->px_height <= sort_param->px_height_max);
   assert_release (px_node->px_id < sort_param->px_array_size);
-
   assert_release (px_node->px_vector_size > 1);
 
-  conn_p = thread_get_current_conn_entry ();
-  conn_index = (conn_p) ? conn_p->idx : 0;
+  css_push_external_task (*thread_p, css_get_current_conn_entry (), new px_sort_myself_task (px_node));
 
-  /* explicit job queue index */
-  conn_index += px_node->px_id;
-
-  job_entry_p = css_make_job_entry (conn_p, (CSS_THREAD_FN) px_sort_myself, (CSS_THREAD_ARG) px_node, conn_index);
-  if (job_entry_p == NULL)
-    {
-      return ER_FAILED;
-    }
-
-  css_add_to_job_queue (job_entry_p);
-
-  assert (ret == NO_ERROR);
-
-  return ret;
+  return NO_ERROR;
 }
 #endif /* SERVER_MODE */
 
@@ -1803,7 +1802,7 @@ px_sort_myself (THREAD_ENTRY * thread_p, PX_TREE_NODE * px_node)
 #endif
 #endif /* SERVER_MODE */
 
-  old_check_interrupt = thread_set_check_interrupt (thread_p, false);
+  old_check_interrupt = logtb_set_check_interrupt (thread_p, false);
 
   buff = px_node->px_buff;
   vector = px_node->px_vector;
@@ -2136,7 +2135,7 @@ exit_on_end:
     }
 #endif /* SERVER_MODE */
 
-  (void) thread_set_check_interrupt (thread_p, old_check_interrupt);
+  (void) logtb_set_check_interrupt (thread_p, old_check_interrupt);
 
   return ret;
 
@@ -2187,7 +2186,9 @@ sort_inphase_sort (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param, SORT_GET_FU
   int error = NO_ERROR;
 
   PX_TREE_NODE *px_node;
+#if defined (SERVER_MODE)
   int rv = NO_ERROR;
+#endif /* SERVER_MODE */
 
   assert (sort_param->half_files <= SORT_MAX_HALF_FILES);
 
@@ -3360,17 +3361,18 @@ sort_exphase_merge_elim_dup (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param)
 		    }
 		  else
 		    {		/* The input section is finished */
+		      int frun;
+
 		      big_index = sort_param->in_half + min;
-		      if (sort_param->file_contents[big_index].
-			  num_pages[sort_param->file_contents[big_index].first_run])
+		      frun = sort_param->file_contents[big_index].first_run;
+
+		      if (sort_param->file_contents[big_index].num_pages[frun])
 			{
 			  /* There are still some pages in the current input run */
 
 			  in_cur_bufaddr[min] = in_sectaddr[min];
 
-			  read_pages =
-			    sort_param->file_contents[big_index].num_pages[sort_param->file_contents[big_index].
-									   first_run];
+			  read_pages = sort_param->file_contents[big_index].num_pages[frun];
 			  if (in_sectsize < read_pages)
 			    {
 			      read_pages = in_sectsize;
@@ -3378,9 +3380,8 @@ sort_exphase_merge_elim_dup (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param)
 
 			  in_last_buf[min] = read_pages;
 
-			  error =
-			    sort_read_area (thread_p, &sort_param->temp[big_index], cur_page[big_index], read_pages,
-					    in_cur_bufaddr[min]);
+			  error = sort_read_area (thread_p, &sort_param->temp[big_index], cur_page[big_index],
+						  read_pages, in_cur_bufaddr[min]);
 			  if (error != NO_ERROR)
 			    {
 			      goto bailout;
@@ -3390,8 +3391,9 @@ sort_exphase_merge_elim_dup (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param)
 			  cur_page[big_index] += read_pages;
 
 			  in_act_bufno[min] = 0;
-			  sort_param->file_contents[big_index].num_pages[sort_param->file_contents[big_index].
-									 first_run] -= read_pages;
+
+			  frun = sort_param->file_contents[big_index].first_run;
+			  sort_param->file_contents[big_index].num_pages[frun] -= read_pages;
 			}
 		      else
 			{
@@ -4121,9 +4123,7 @@ sort_exphase_merge (THREAD_ENTRY * thread_p, SORT_PARAM * sort_param)
 
 			  in_cur_bufaddr[min] = in_sectaddr[min];
 
-			  read_pages =
-			    sort_param->file_contents[big_index].num_pages[sort_param->file_contents[big_index].
-									   first_run];
+			  read_pages = sort_param->file_contents[big_index].num_pages[first_run];
 			  if (in_sectsize < read_pages)
 			    {
 			      read_pages = in_sectsize;

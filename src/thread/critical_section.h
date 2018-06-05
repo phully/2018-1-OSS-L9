@@ -27,12 +27,23 @@
 
 #ident "$Id$"
 
+#include "dbtype_def.h"
+#include "porting.h"		// for pthread, STATIC_CAST
+#include "thread_compat.hpp"
+
 #if !defined(WINDOWS)
 #include <pthread.h>
 #endif /* !WINDOWS */
+#if !defined(WINDOWS)
+#include <sys/time.h>
+#endif /* !WINDOWS */
+#if defined (WINDOWS)
+#include <WinSock2.h>
+#endif // WINDOWS
 
-#include "thread.h"
-#include "dbtype.h"
+#if !defined (SERVER_MODE) && !defined (SA_MODE)
+#error critical_section.h belongs to server or stand-alone modules.
+#endif /* !defined (SERVER_MODE) && !defined (SA_MODE) */
 
 enum
 {
@@ -46,9 +57,7 @@ enum
  */
 enum
 {
-  CSECT_ER_LOG_FILE = 0,	/* Latch for error msg log file */
-  CSECT_ER_MSG_CACHE,		/* Latch for error msg cache */
-  CSECT_WFG,			/* Latch for wait-for-graph */
+  CSECT_WFG = 0,		/* Latch for wait-for-graph */
   CSECT_LOG,			/* Latch for log manager */
   CSECT_LOCATOR_SR_CLASSNAME_TABLE,	/* Latch for classname to classOID entries */
   CSECT_QPROC_QUERY_TABLE,	/* Latch for query manager table */
@@ -69,7 +78,7 @@ enum
   CSECT_LAST
 };
 
-#define CRITICAL_SECTION_COUNT  CSECT_LAST
+static const int CRITICAL_SECTION_COUNT = STATIC_CAST (int, CSECT_LAST);
 
 typedef enum
 {
@@ -109,7 +118,7 @@ typedef struct sync_critical_section
   pthread_cond_t readers_ok;	/* start waiting readers */
   THREAD_ENTRY *waiting_writers_queue;	/* queue of waiting writers */
   THREAD_ENTRY *waiting_promoters_queue;	/* queue of waiting promoters */
-  pthread_t owner;		/* CS owner writer */
+  thread_id_t owner;		/* CS owner writer */
   int tran_index;		/* transaction id acquiring CS */
   SYNC_STATS *stats;
 } SYNC_CRITICAL_SECTION;
@@ -127,7 +136,7 @@ typedef struct sync_rmutex
 {
   const char *name;
   pthread_mutex_t lock;		/* mutex */
-  pthread_t owner;		/* owner thread id */
+  thread_id_t owner;		/* owner thread id */
   int lock_cnt;			/* # of times that owner enters */
   SYNC_STATS *stats;
 } SYNC_RMUTEX;
@@ -141,6 +150,15 @@ extern int csect_demote (THREAD_ENTRY * thread_p, int cs_index, int wait_secs);
 extern int csect_promote (THREAD_ENTRY * thread_p, int cs_index, int wait_secs);
 extern int csect_exit (THREAD_ENTRY * thread_p, int cs_index);
 
+#if defined (SERVER_MODE)
+extern const char *csect_name_at (int cs_index);
+#else // not SERVER_MODE = SA_MODE
+static inline const char *
+csect_name_at (int cs_index)
+{
+  return "UNKNOWN";
+}
+#endif // not SERVER_MODE = SA_MODE
 extern int csect_initialize_critical_section (SYNC_CRITICAL_SECTION * cs_ptr, const char *name);
 extern int csect_finalize_critical_section (SYNC_CRITICAL_SECTION * cs_ptr);
 extern int csect_enter_critical_section (THREAD_ENTRY * thread_p, SYNC_CRITICAL_SECTION * cs_ptr, int wait_secs);

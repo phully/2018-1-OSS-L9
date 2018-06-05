@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <math.h>
+#include <assert.h>
 #if !defined(WINDOWS)
 #include <values.h>
 #endif /* !WINDOWS */
@@ -57,6 +58,7 @@
 #include "locator_cl.h"
 #include "object_domain.h"
 #include "network_interface_cl.h"
+#include "dbtype.h"
 
 /* figure out how many bytes a QO_USING_INDEX struct with n entries requires */
 #define SIZEOF_USING_INDEX(n) \
@@ -730,7 +732,7 @@ qo_env_init (PARSER_CONTEXT * parser, PT_NODE * query)
   env->nterms = 0;
   env->neqclasses = 0;
 
-  QO_INFINITY = infinity ();
+  QO_INFINITY = UTIL_infinity ();
 
   return env;
 
@@ -1914,7 +1916,8 @@ qo_analyze_term (QO_TERM * term, int term_type)
 {
   QO_ENV *env;
   PARSER_CONTEXT *parser;
-  int merge_applies, lhs_indexable, rhs_indexable;
+  bool merge_applies;
+  bool lhs_indexable, rhs_indexable;
   PT_NODE *pt_expr, *lhs_expr, *rhs_expr;
   QO_NODE *head_node = NULL, *tail_node = NULL;
   QO_SEGMENT *head_seg, *tail_seg;
@@ -1929,8 +1932,8 @@ qo_analyze_term (QO_TERM * term, int term_type)
 
   parser = QO_ENV_PARSER (env);
   pt_expr = QO_TERM_PT_EXPR (term);
-  merge_applies = 1;		/* until proven otherwise */
-  lhs_indexable = rhs_indexable = 0;	/* until proven as indexable */
+  merge_applies = true;		/* until proven otherwise */
+  lhs_indexable = rhs_indexable = false;	/* until proven as indexable */
   lhs_expr = rhs_expr = NULL;
 
   bitset_init (&lhs_segs, env);
@@ -1964,7 +1967,7 @@ qo_analyze_term (QO_TERM * term, int term_type)
 	case PT_GT:
 	case PT_GE:
 	  /* temporary guess; RHS could be a indexable segment */
-	  rhs_indexable = 1;
+	  rhs_indexable = true;
 	  /* no break; fall through */
 
 	  /* operators classified as rhs-indexable */
@@ -2003,7 +2006,7 @@ qo_analyze_term (QO_TERM * term, int term_type)
 	case PT_IS_IN:
 	case PT_EQ_SOME:
 	  /* temporary guess; LHS could be a indexable segment */
-	  lhs_indexable = 1;
+	  lhs_indexable = true;
 	  /* no break; fall through */
 
 	  /* operators classified as not-indexable */
@@ -2110,22 +2113,22 @@ qo_analyze_term (QO_TERM * term, int term_type)
 		    case PT_RANGE:
 		      if (!QO_TERM_IS_FLAGED (term, QO_TERM_EQUAL_OP))
 			{
-			  lhs_indexable = 0;
+			  lhs_indexable = false;
 			}
 		      break;
 		    default:
-		      lhs_indexable = 0;
+		      lhs_indexable = false;
 		      break;
 		    }
 		}
 	      else
 		{
-		  lhs_indexable = 1;
+		  lhs_indexable = true;
 		}
 	    }
 	  else
 	    {
-	      lhs_indexable = 0;
+	      lhs_indexable = false;
 	    }
 	}
       if (lhs_indexable
@@ -2139,7 +2142,7 @@ qo_analyze_term (QO_TERM * term, int term_type)
 	  n = bitset_first_member (&lhs_segs);
 	  if ((n == -1) || (QO_SEG_FUNC_INDEX (QO_ENV_SEG (env, n)) == false))
 	    {
-	      lhs_indexable = 0;
+	      lhs_indexable = false;
 	    }
 	}
       if (lhs_indexable && rhs_expr->next == NULL)
@@ -2158,18 +2161,18 @@ qo_analyze_term (QO_TERM * term, int term_type)
 		case PT_UNION:
 		case PT_DIFFERENCE:
 		case PT_INTERSECTION:
-		  lhs_indexable = 0;
+		  lhs_indexable = false;
 		  break;
 		case PT_NAME:
 		  if (rhs_expr->info.name.meta_class != PT_PARAMETER && pt_is_set_type (rhs_expr))
 		    {
-		      lhs_indexable = 0;
+		      lhs_indexable = false;
 		    }
 		  break;
 		case PT_DOT_:
 		  if (pt_is_set_type (rhs_expr))
 		    {
-		      lhs_indexable = 0;
+		      lhs_indexable = false;
 		    }
 		  break;
 		case PT_VALUE:
@@ -2181,19 +2184,19 @@ qo_analyze_term (QO_TERM * term, int term_type)
 
 		      if (db_col_size (db_collectionp) == 0)
 			{
-			  lhs_indexable = 0;
+			  lhs_indexable = false;
 			}
 		    }
-		  lhs_indexable &= pt_is_pseudo_const (rhs_expr);
+		  lhs_indexable = lhs_indexable && pt_is_pseudo_const (rhs_expr);
 		  break;
 		default:
-		  lhs_indexable &= pt_is_pseudo_const (rhs_expr);
+		  lhs_indexable = lhs_indexable && pt_is_pseudo_const (rhs_expr);
 		}
 	    }
 	  else
 	    {
 	      /* is LHS attribute and is RHS constant value ? */
-	      lhs_indexable &= pt_is_pseudo_const (rhs_expr);
+	      lhs_indexable = lhs_indexable && pt_is_pseudo_const (rhs_expr);
 	    }
 	}
 
@@ -2209,8 +2212,8 @@ qo_analyze_term (QO_TERM * term, int term_type)
 	  if (has_nis_coll)
 	    {
 	      QO_TERM_SET_FLAG (term, QO_TERM_NON_IDX_SARG_COLL);
-	      lhs_indexable = 0;
-	      rhs_indexable = 0;
+	      lhs_indexable = false;
+	      rhs_indexable = false;
 	    }
 	}
 
@@ -2244,22 +2247,22 @@ qo_analyze_term (QO_TERM * term, int term_type)
 		    case PT_RANGE:
 		      if (!QO_TERM_IS_FLAGED (term, QO_TERM_EQUAL_OP))
 			{
-			  rhs_indexable = 0;
+			  rhs_indexable = false;
 			}
 		      break;
 		    default:
-		      rhs_indexable = 0;
+		      rhs_indexable = false;
 		      break;
 		    }
 		}
 	      else
 		{
-		  rhs_indexable = 1;
+		  rhs_indexable = true;
 		}
 	    }
 	  else
 	    {
-	      rhs_indexable = 0;
+	      rhs_indexable = false;
 	    }
 	}
       if (rhs_indexable
@@ -2273,7 +2276,7 @@ qo_analyze_term (QO_TERM * term, int term_type)
 	  n = bitset_first_member (&rhs_segs);
 	  if ((n == -1) || (QO_SEG_FUNC_INDEX (QO_ENV_SEG (env, n)) == false))
 	    {
-	      rhs_indexable = 0;
+	      rhs_indexable = false;
 	    }
 	}
       if (rhs_indexable)
@@ -2313,7 +2316,7 @@ qo_analyze_term (QO_TERM * term, int term_type)
   else
     {				/* if (!bitset_intersects(&lhs_nodes, &rhs_nodes)) */
 
-      merge_applies = 0;
+      merge_applies = false;
       QO_TERM_CAN_USE_INDEX (term) = 0;
 
     }				/* if (!bitset_intersects(&lhs_nodes, &rhs_nodes)) */
@@ -2402,14 +2405,14 @@ qo_analyze_term (QO_TERM * term, int term_type)
 	{
 	  QO_TERM_CLASS (term) = QO_TC_OTHER;
 
-	  merge_applies = 0;
+	  merge_applies = false;
 	}
 
       /* And there had better be something on both sides of the comparison too. You don't want to be misled by
        * something like "x.a + y.b = 100" because that's definitely not mergeable right now. Perhaps if we rewrote it
        * like "x.a = 100 - y.b" but that seems to be stretching things a little bit. 
        */
-      merge_applies &= (!bitset_is_empty (&lhs_segs) && !bitset_is_empty (&rhs_segs));
+      merge_applies = merge_applies && (!bitset_is_empty (&lhs_segs) && !bitset_is_empty (&rhs_segs));
 
       if (merge_applies || QO_TERM_CLASS (term) == QO_TC_PATH)
 	{
@@ -2453,7 +2456,7 @@ qo_analyze_term (QO_TERM * term, int term_type)
       /* always true transitive equi-join term is not suitable as m-join edge. */
       if (PT_EXPR_INFO_IS_FLAGED (pt_expr, PT_EXPR_INFO_TRANSITIVE))
 	{
-	  merge_applies = 0;
+	  merge_applies = false;
 	}
 
       if (merge_applies)
@@ -3254,6 +3257,16 @@ get_expr_fcode_rank (FUNC_TYPE fcode)
   switch (fcode)
     {
     case F_ELT:
+    case F_JSON_OBJECT:
+    case F_JSON_ARRAY:
+    case F_JSON_REMOVE:
+    case F_JSON_ARRAY_APPEND:
+    case F_JSON_MERGE:
+    case F_JSON_GET_ALL_PATHS:
+    case F_JSON_INSERT:
+    case F_JSON_REPLACE:
+    case F_JSON_SET:
+    case F_JSON_KEYS:
       return RANK_EXPR_LIGHT;
     case F_INSERT_SUBSTRING:
       return RANK_EXPR_MEDIUM;
@@ -4544,7 +4557,7 @@ qo_free_index (QO_ENV * env, QO_INDEX * indexp)
 	    {
 	      free_and_init (entryp->seg_equal_terms);
 	    }
-	  if (env, entryp->seg_other_terms)
+	  if (entryp->seg_other_terms)
 	    {
 	      free_and_init (entryp->seg_other_terms);
 	    }
@@ -5465,7 +5478,7 @@ qo_data_compare (DB_DATA * data1, DB_DATA * data2, DB_TYPE type)
       break;
 
     case DB_TYPE_TIMESTAMPLTZ:
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
       result = ((data1->utime < data2->utime) ? -1 : ((data1->utime > data2->utime) ? 1 : 0));
       break;
     case DB_TYPE_TIMESTAMPTZ:
@@ -5599,7 +5612,7 @@ qo_env_new (PARSER_CONTEXT * parser, PT_NODE * query)
   env->dump_enable = prm_get_bool_value (PRM_ID_QO_DUMP);
   bitset_init (&(env->fake_terms), env);
   bitset_init (&QO_ENV_SORT_LIMIT_NODES (env), env);
-  DB_MAKE_NULL (&QO_ENV_LIMIT_VALUE (env));
+  db_make_null (&QO_ENV_LIMIT_VALUE (env));
 
   assert (query->node_type == PT_SELECT);
   if (PT_SELECT_INFO_IS_FLAGED (query, PT_SELECT_INFO_COLS_SCHEMA)
@@ -6496,7 +6509,6 @@ qo_find_index_segs (QO_ENV * env, SM_CLASS_CONSTRAINT * consp, QO_NODE * nodep, 
   int i, iseg;
   bool matched;
   int count_matched_index_attributes = 0;
-  int k = 0;
 
   /* working set; indexed segments */
   bitset_init (&working, env);
@@ -6590,7 +6602,7 @@ static bool
 qo_is_coverage_index (QO_ENV * env, QO_NODE * nodep, QO_INDEX_ENTRY * index_entry)
 {
   int i, j, seg_idx;
-  QO_SEGMENT *seg, *fi_seg = NULL;
+  QO_SEGMENT *seg;
   bool found;
   QO_CLASS_INFO *class_infop = NULL;
   QO_NODE *seg_nodep = NULL;
@@ -7277,7 +7289,7 @@ qo_find_node_indexes (QO_ENV * env, QO_NODE * nodep)
 		      temp_name = consp->attributes[0]->header.name;
 		      if (temp_name)
 			{
-			  int len = strlen (temp_name) + 1;
+			  size_t len = strlen (temp_name) + 1;
 			  index_entryp->statistics_attribute_name = (char *) malloc (sizeof (char) * len);
 			  if (index_entryp->statistics_attribute_name == NULL)
 			    {
@@ -8475,7 +8487,7 @@ qo_discover_sort_limit_nodes (QO_ENV * env)
       goto abandon_stop_limit;
     }
 
-  if ((DB_BIGINT) limit_max_count < DB_GET_BIGINT (&QO_ENV_LIMIT_VALUE (env)))
+  if ((DB_BIGINT) limit_max_count < db_get_bigint (&QO_ENV_LIMIT_VALUE (env)))
     {
       /* Limit too large to apply this optimization. Mark it as candidate but do not generate SORT-LIMIT plans at this
        * time. 
@@ -9077,8 +9089,6 @@ qo_is_filter_index (QO_INDEX_ENTRY * ent)
 void
 qo_check_coll_optimization (QO_INDEX_ENTRY * ent, COLL_OPT * collation_opt)
 {
-  bool is_prefix_index = false;
-
   assert (collation_opt != NULL);
 
   collation_opt->allow_index_opt = true;

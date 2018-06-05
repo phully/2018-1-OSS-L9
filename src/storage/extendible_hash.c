@@ -51,10 +51,7 @@
 #include "overflow_file.h"
 #include "memory_hash.h"	/* For hash functions */
 #include "db_date.h"
-#include "thread.h"
-#if defined (SA_MODE)
-#include "transaction_cl.h"
-#endif /* SA_MODE */
+#include "thread_compat.hpp"
 
 #ifdef EHASH_DEBUG
 #define EHASH_BALANCE_FACTOR     4	/* Threshold rate of no. of directory pointers over no. of bucket pages. If
@@ -192,7 +189,7 @@ struct ehash_repetition
  */
 /* TODO: ~0: M2 64-bit */
 #define GETBITS(value, pos, n) \
-  ( ((value) >> ( EHASH_HASH_KEY_BITS - (pos) - (n) + 1)) & (~(~0 << (n))) )
+  ( ((value) >> ( EHASH_HASH_KEY_BITS - (pos) - (n) + 1)) & (~(~0UL << (n))) )
   /* Plus 1 since bits are numbered from 1 to 32 */
 
 /*
@@ -799,7 +796,7 @@ eh_dump_key (DB_TYPE key_type, void *key, OID * value_ptr)
       fprintf (stdout, "key:%d", ((DB_TIMETZ *) key)->time, ((DB_TIMETZ *) key)->tz_id);
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
     case DB_TYPE_TIMESTAMPLTZ:
       fprintf (stdout, "key:%d", *(DB_UTIME *) key);
       break;
@@ -925,7 +922,7 @@ ehash_get_key_size (DB_TYPE key_type)
       key_size = sizeof (DB_TIME);
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
       key_size = sizeof (DB_UTIME);
       break;
 
@@ -1262,7 +1259,6 @@ xehash_destroy (THREAD_ENTRY * thread_p, EHID * ehid_p)
 {
   EHASH_DIR_HEADER *dir_header_p;
   PAGE_PTR dir_page_p;
-  bool save_check_interrupt;
 
   if (ehid_p == NULL)
     {
@@ -2124,7 +2120,7 @@ ehash_write_key_to_record (RECDES * recdes_p, DB_TYPE key_type, void *key_p, sho
       *(DB_TIME *) record_p = *(DB_TIME *) key_p;
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
       *(DB_UTIME *) record_p = *(DB_UTIME *) key_p;
       break;
 
@@ -2178,7 +2174,7 @@ ehash_compose_record (DB_TYPE key_type, void *key_p, OID * value_p, RECDES * rec
 
   if (key_type == DB_TYPE_STRING)
     {
-      key_size = strlen ((char *) key_p) + 1;	/* Plus one is for \0 */
+      key_size = (short) strlen ((char *) key_p) + 1;	/* Plus one is for \0 */
 
       /* max length of class name is 255 */
       assert (key_size <= 256);
@@ -2340,7 +2336,7 @@ ehash_compare_key (THREAD_ENTRY * thread_p, char *bucket_record_p, DB_TYPE key_t
       compare_result = *(DB_TIME *) key_p - *(DB_TIME *) bucket_record_p;
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
       compare_result = *(DB_UTIME *) key_p - *(DB_UTIME *) bucket_record_p;
       break;
 
@@ -4156,7 +4152,7 @@ ehash_hash_string_type (char *key_p, char *original_key_p)
   char *p = NULL;
   char *new_key_p = NULL;
 
-  length = strlen (key_p);
+  length = (int) strlen (key_p);
 
   if (length > 0)
     {
@@ -4363,7 +4359,7 @@ ehash_hash (void *original_key_p, DB_TYPE key_type)
     case DB_TYPE_FLOAT:
     case DB_TYPE_DATE:
     case DB_TYPE_TIME:
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
     case DB_TYPE_DATETIME:
     case DB_TYPE_INTEGER:
       hash_key = ehash_hash_four_bytes_type (key);
@@ -4730,7 +4726,7 @@ ehash_apply_each (THREAD_ENTRY * thread_p, EHID * ehid_p, RECDES * recdes_p, DB_
       *((DB_TIME *) (&next_key)) = *(DB_TIME *) bucket_record_p;
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
       *((DB_UTIME *) (&next_key)) = *(DB_UTIME *) bucket_record_p;
       break;
 
@@ -4947,7 +4943,7 @@ ehash_dump (THREAD_ENTRY * thread_p, EHID * ehid_p)
       printf (" time                                   *\n");
       break;
 
-    case DB_TYPE_UTIME:
+    case DB_TYPE_TIMESTAMP:
       printf (" utime                                  *\n");
       break;
 
@@ -5225,7 +5221,7 @@ ehash_dump_bucket (THREAD_ENTRY * thread_p, PAGE_PTR bucket_page_p, DB_TYPE key_
 	  fprintf (stdout, "      %2d:%2d:%2d               ", hour, minute, second);
 	  break;
 
-	case DB_TYPE_UTIME:
+	case DB_TYPE_TIMESTAMP:
 	  {
 	    DB_DATE tmp_date;
 	    DB_TIME tmp_time;
@@ -5417,7 +5413,9 @@ ehash_rv_insert_undo (THREAD_ENTRY * thread_p, LOG_RCV * recv_p)
 {
   EHID ehid;
   char *record_p = (char *) recv_p->data;
+#if defined (ENABLE_UNUSED_FUNCTION)
   short record_type = recv_p->offset;
+#endif
 
   record_p = ehash_read_ehid_from_record (record_p, &ehid);
   record_p += sizeof (OID);
@@ -5510,8 +5508,10 @@ ehash_rv_delete_undo (THREAD_ENTRY * thread_p, LOG_RCV * recv_p)
   EHID ehid;
   OID oid;
   char *record_p = (char *) recv_p->data;
-  short record_type = recv_p->offset;
   int error = NO_ERROR;
+#if defined (ENABLE_UNUSED_FUNCTION)
+  short record_type = recv_p->offset;
+#endif
 
   record_p = ehash_read_ehid_from_record (record_p, &ehid);
   record_p = ehash_read_oid_from_record (record_p, &oid);
