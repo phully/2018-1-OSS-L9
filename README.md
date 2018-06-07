@@ -19,6 +19,11 @@ MEMBER
 - 류정석   ryoo0424     ryoo0424@naver.com
 - 윤여찬   manshimaro   power200012@naver.com
 
+License
+======
+DBMS 엔진 부분 : GPL v2 License<br/>
+Interface 부분 : BSD LIcense
+
 Responsive Website
 ===========
 - http://34.201.172.110/wordpress/
