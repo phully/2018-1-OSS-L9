@@ -2,7 +2,7 @@ import os
 import sys
 
 from django.db.backends import BaseDatabaseClient
-
+#DB 클라이언트 관련 명령어 실행 시의 옵션
 class DatabaseClient(BaseDatabaseClient):
     executable_name = 'csql'
 
