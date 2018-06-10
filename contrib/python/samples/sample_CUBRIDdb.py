@@ -19,6 +19,8 @@ cur.execute("insert into test_cubrid (name) values (?)", ['Tom',])
 
 cur.execute("insert into test_cubrid (name) values (?)", ['곽현기',])
 
+cur.execute("insert into test_cubrid (name) values (?)", ['ヒョンキ',])
+
 cur.execute('select * from test_cubrid')
 
 # fetch result use fetchone()
