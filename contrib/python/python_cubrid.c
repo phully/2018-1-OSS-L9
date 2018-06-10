@@ -64,7 +64,7 @@ static struct _cubrid_autocommit
   {
   "TRUE"}
 };
-
+//에러 타입, 메세지 지
 static struct _error_message
 {
   int err;
