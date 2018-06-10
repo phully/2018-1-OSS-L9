@@ -1,6 +1,6 @@
 Django_cubrid tutorial
 ======================
-
+<<장고_CUBRID 연동 가이드>>
 django_cubrid: Django backend for CUBRID Database
 Author: Li Jinhu (beagem@nhn.com), Zhang Hui, Li Lin(aniterle@nhn.com)
 Date: December, 2012
