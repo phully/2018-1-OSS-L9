@@ -1,3 +1,4 @@
+#커서 메소드 설정 코드
 import sys
 import types
 
