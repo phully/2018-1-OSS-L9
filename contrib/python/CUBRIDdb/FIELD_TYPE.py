@@ -4,6 +4,8 @@ These constants represent the various column (field) types that are
 supported by CUBRID.
 
 """
+#CUBRID의 필드 종류 컨텐츠
+#CURIRD에서 지원되는 다양한 필드타입을 
 
 CHAR    = 1
 VARCHAR = 2
