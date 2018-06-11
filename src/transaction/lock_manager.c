@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 락의 행동과 관련된 코드, 분량이 매우 많습니다(10K lines)
  * lock_manager.c - lock management module (at the server)
  */
 
