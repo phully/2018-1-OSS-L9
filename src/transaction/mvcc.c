@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 다중 버전 동시성 관리(Concurrency Control)를 정의하는 
  * mvcc.c - mvcc snapshot
  */
 
