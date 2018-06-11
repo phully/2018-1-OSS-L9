@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 데이터베이스 부팅시의 행동을 정의하는 
  * boot.h - Boot management common header
  */
 
