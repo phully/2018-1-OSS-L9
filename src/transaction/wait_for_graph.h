@@ -20,7 +20,7 @@
 
 /*
  * wait_for_graph.h - Header file for WFG
- *
+ * WFG는 데드락 감지를 운영체제나 데이터베이스 관리시스템에서 데드락 감지를 위해 사용되는 그래프입니다.
  */
 
 #ifndef _WAIT_FOR_GRAPH_H_
