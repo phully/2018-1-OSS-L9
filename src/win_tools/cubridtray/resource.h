@@ -19,7 +19,7 @@
 //{{NO_DEPENDENCIES}}
 // Microsoft Developer Studio generated include file.
 // Used by unitray.rc
-//
+// CUBRID 타입별 상수 
 #define ID_UCMD_ADD                     2
 #define IDC_UCP_APPLY                   3
 #define ID_UCMD_DROP                    3
