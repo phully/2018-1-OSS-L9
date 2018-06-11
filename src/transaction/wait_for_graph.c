@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 데드락 감지를 위한 
  * wait_for_graph.c - management of Wait-For-Graph
  */
 
