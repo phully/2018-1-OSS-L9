@@ -1,5 +1,5 @@
 // Was.cpp : implementation file
-//
+// 웹 어플리케이션 서버 정의 
 
 #include "stdafx.h"
 #include "cubridtray.h"
