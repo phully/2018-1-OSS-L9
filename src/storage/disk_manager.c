@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 디스크 관리 동작에 관한 
  * disk_manager.c - Disk managment module (at server)
  */
 
