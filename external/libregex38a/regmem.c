@@ -1,4 +1,4 @@
-/*
+/* 멤버들의 레지스터를 정의하는 코드
  * routines to set the default memory allocator/deallocator used in the library
  */
 #include <sys/types.h>
