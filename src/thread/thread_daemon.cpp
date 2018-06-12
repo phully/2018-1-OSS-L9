@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 데몬(백그라운드로 동작하는 프로그램) 
  * thread_daemon - interface for daemon threads
  */
 
