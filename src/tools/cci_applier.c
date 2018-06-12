@@ -1,3 +1,4 @@
+//CCI(C 클라이언트 인터페이스)적용 코드
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
