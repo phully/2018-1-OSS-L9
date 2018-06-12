@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* citical section 설정과 관련된 
  * critical_section.c - critical section support
  */
 
