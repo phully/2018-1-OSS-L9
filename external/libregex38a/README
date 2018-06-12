@@ -49,3 +49,4 @@ Regex.h goes in /usr/include.  All other .h files are internal only.
   to statically be included in libcascci.a
 
 -------------------------------------------------------------------------------
+위의 내용은 SKKU SOSC lecture에 의해 수정된 내용을 포함하고 있습니다.
