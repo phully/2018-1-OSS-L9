@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 쓰레드 구성 원소 정의 
  * thread_entry - implementation for thread contextual cache.
  */
 
