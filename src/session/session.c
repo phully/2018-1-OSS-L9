@@ -17,7 +17,7 @@
  *
  */
 
-/*
+/* 데이터베이스 세션 동작과 관련된 
  * session.c - session state internal API
  */
 
